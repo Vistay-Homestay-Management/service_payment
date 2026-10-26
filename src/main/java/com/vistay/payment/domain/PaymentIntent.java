@@ -10,6 +10,8 @@ import jakarta.persistence.Version;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "payment_intents", schema = "app")
@@ -26,6 +28,7 @@ public class PaymentIntent {
     private UUID customerId;
     @Column(nullable = false, precision = 19, scale = 4)
     private BigDecimal amount;
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(nullable = false, length = 3, columnDefinition = "char(3)")
     private String currency;
     @Column(name = "purpose_snapshot", nullable = false, length = 500)

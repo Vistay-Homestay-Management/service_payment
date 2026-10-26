@@ -7,6 +7,8 @@ import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "provider_transactions", schema = "app")
@@ -18,6 +20,7 @@ public class ProviderTransaction {
     @Column(name = "payment_intent_id") private UUID paymentIntentId;
     @Column(name = "provider_order_id", length = 13) private String providerOrderId;
     @Column(nullable = false, precision = 19, scale = 4) private BigDecimal amount;
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(nullable = false, length = 3, columnDefinition = "char(3)") private String currency;
     @Column(nullable = false, length = 12) private String direction;
     @Column(name = "transfer_content", length = 500) private String transferContent;
