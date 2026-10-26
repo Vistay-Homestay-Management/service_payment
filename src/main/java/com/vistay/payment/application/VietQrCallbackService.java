@@ -2,6 +2,8 @@ package com.vistay.payment.application;
 
 import com.vistay.payment.domain.CallbackTransaction;
 import com.vistay.payment.domain.PaymentIntentRepository;
+import com.vistay.payment.domain.OutboxEvent;
+import com.vistay.payment.domain.OutboxEventRepository;
 import com.vistay.payment.domain.ProviderTransaction;
 import com.vistay.payment.domain.ProviderTransactionRepository;
 import com.vistay.payment.domain.ReconciliationItem;
@@ -16,15 +18,18 @@ public class VietQrCallbackService {
     private final ProviderTransactionRepository transactions;
     private final ReconciliationItemRepository reconciliation;
     private final CallbackSecurityService security;
+    private final OutboxEventRepository outbox;
 
     public VietQrCallbackService(PaymentIntentRepository intents,
                                  ProviderTransactionRepository transactions,
                                  ReconciliationItemRepository reconciliation,
-                                 CallbackSecurityService security) {
+                                 CallbackSecurityService security,
+                                 OutboxEventRepository outbox) {
         this.intents = intents;
         this.transactions = transactions;
         this.reconciliation = reconciliation;
         this.security = security;
+        this.outbox = outbox;
     }
 
     @Transactional
@@ -41,11 +46,13 @@ public class VietQrCallbackService {
         if (mismatch == null) {
             intent.confirm(value.transactionTime());
             intents.save(intent);
-            transactions.save(ProviderTransaction.matched(value, intent, fingerprint));
+            var transaction = transactions.save(ProviderTransaction.matched(value, intent, fingerprint));
+            outbox.save(OutboxEvent.paymentTransaction(transaction, intent, value, "MATCHED", null));
             return new CallbackResult(false, "MATCHED");
         }
         var transaction = transactions.save(ProviderTransaction.unmatched(value, mismatch, fingerprint));
         reconciliation.save(ReconciliationItem.open(transaction.getId(), reasonCode(mismatch), mismatch));
+        outbox.save(OutboxEvent.paymentTransaction(transaction, intent, value, "UNMATCHED", mismatch));
         return new CallbackResult(false, "UNMATCHED");
     }
 
