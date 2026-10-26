@@ -24,7 +24,9 @@ public class ProviderTransaction {
     @Column(nullable = false, length = 3, columnDefinition = "char(3)") private String currency;
     @Column(nullable = false, length = 12) private String direction;
     @Column(name = "transfer_content", length = 500) private String transferContent;
-    @Column(name = "payload_sha256", nullable = false, length = 64) private String payloadSha256;
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "payload_sha256", nullable = false, length = 64, columnDefinition = "char(64)")
+    private String payloadSha256;
     @Column(name = "match_status", nullable = false, length = 24) private String matchStatus;
     @Column(name = "mismatch_reason", length = 500) private String mismatchReason;
     @Column(name = "occurred_at", nullable = false) private Instant occurredAt;
