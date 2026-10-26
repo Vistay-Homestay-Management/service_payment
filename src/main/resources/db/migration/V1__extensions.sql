@@ -1,0 +1,6 @@
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE SCHEMA IF NOT EXISTS app;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+SET search_path TO app, extensions, public;
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

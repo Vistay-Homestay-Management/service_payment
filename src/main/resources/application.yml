@@ -1,0 +1,97 @@
+spring:
+  application:
+    name: vistay-payment-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:vistay_payment_db}
+    username: ${DB_USERNAME:vistay}
+    password: ${DB_PASSWORD:vistay}
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:4}
+      minimum-idle: ${DB_POOL_MIN_IDLE:0}
+      schema: app
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      ssl:
+        enabled: ${REDIS_SSL_ENABLED:false}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: app
+  flyway:
+    enabled: true
+    default-schema: app
+    schemas: app
+    create-schemas: true
+    clean-disabled: true
+    baseline-on-migrate: false
+    out-of-order: false
+    validate-on-migrate: true
+  graphql:
+    http:
+      path: /graphql
+    graphiql:
+      enabled: false
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${JWT_ISSUER:http://identity.localhost/realms/vistay-backoffice}
+          jwk-set-uri: ${JWT_JWKS_URI:http://keycloak:8080/realms/vistay-backoffice/protocol/openid-connect/certs}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9093}
+    properties:
+      security.protocol: ${KAFKA_SECURITY_PROTOCOL:SSL}
+      sasl.mechanism: ${KAFKA_SASL_MECHANISM:SCRAM-SHA-512}
+      sasl.jaas.config: ${KAFKA_SASL_JAAS_CONFIG:}
+      ssl.truststore.location: ${KAFKA_TRUSTSTORE_LOCATION:}
+      ssl.truststore.password: ${KAFKA_TRUSTSTORE_PASSWORD:}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+    consumer:
+      enable-auto-commit: false
+      properties:
+        isolation.level: read_committed
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+vistay:
+  security:
+    audience: ${JWT_AUDIENCE:vistay-backoffice-api}
+  payment:
+    activation-mode: ${PAYMENT_ACTIVATION_MODE:DISABLED}
+    vietqr:
+      base-url: ${VIETQR_BASE_URL:https://api.vietqr.io}
+      client-id: ${VIETQR_CLIENT_ID:}
+      api-key: ${VIETQR_API_KEY:}
+      bank-bin: ${VIETQR_BANK_BIN:}
+      account-number: ${VIETQR_ACCOUNT_NUMBER:}
+      account-name: ${VIETQR_ACCOUNT_NAME:}
+      callback-client-id: ${VIETQR_CALLBACK_CLIENT_ID:}
+      callback-client-secret: ${VIETQR_CALLBACK_CLIENT_SECRET:}
+      callback-token-ttl: ${VIETQR_CALLBACK_TOKEN_TTL:PT5M}
+
+logging:
+  structured:
+    format:
+      console: logstash

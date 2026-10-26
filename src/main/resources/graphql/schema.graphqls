@@ -1,0 +1,8 @@
+type Query {
+    serviceInfo: ServiceInfo!
+}
+
+type ServiceInfo {
+    name: String!
+    version: String!
+}
