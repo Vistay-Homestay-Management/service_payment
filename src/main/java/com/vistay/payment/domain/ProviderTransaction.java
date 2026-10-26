@@ -18,7 +18,7 @@ public class ProviderTransaction {
     @Column(name = "payment_intent_id") private UUID paymentIntentId;
     @Column(name = "provider_order_id", length = 13) private String providerOrderId;
     @Column(nullable = false, precision = 19, scale = 4) private BigDecimal amount;
-    @Column(nullable = false, length = 3) private String currency;
+    @Column(nullable = false, length = 3, columnDefinition = "char(3)") private String currency;
     @Column(nullable = false, length = 12) private String direction;
     @Column(name = "transfer_content", length = 500) private String transferContent;
     @Column(name = "payload_sha256", nullable = false, length = 64) private String payloadSha256;

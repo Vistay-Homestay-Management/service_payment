@@ -26,7 +26,7 @@ public class PaymentIntent {
     private UUID customerId;
     @Column(nullable = false, precision = 19, scale = 4)
     private BigDecimal amount;
-    @Column(nullable = false, length = 3)
+    @Column(nullable = false, length = 3, columnDefinition = "char(3)")
     private String currency;
     @Column(name = "purpose_snapshot", nullable = false, length = 500)
     private String purposeSnapshot;
