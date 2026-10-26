@@ -59,6 +59,11 @@ spring:
       enable-auto-commit: false
       properties:
         isolation.level: read_committed
+  grpc:
+    client:
+      channel:
+        finance:
+          address: ${FINANCE_GRPC_ADDRESS:static://service-finance:9090}
 
 server:
   port: ${SERVER_PORT:8080}
@@ -80,6 +85,7 @@ vistay:
     audience: ${JWT_AUDIENCE:vistay-backoffice-api}
   payment:
     activation-mode: ${PAYMENT_ACTIVATION_MODE:DISABLED}
+    finance-deadline: ${FINANCE_GRPC_DEADLINE:PT2S}
     vietqr:
       base-url: ${VIETQR_BASE_URL:https://api.vietqr.io}
       client-id: ${VIETQR_CLIENT_ID:}
