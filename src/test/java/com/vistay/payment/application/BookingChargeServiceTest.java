@@ -39,6 +39,9 @@ class BookingChargeServiceTest {
     @Mock
     private FinanceAllocationClient financeAllocationClient;
 
+    @Mock
+    private BookingBranchResolver bookingBranchResolver;
+
     private BookingChargeService service;
 
     private final UUID bookingId = UUID.randomUUID();
@@ -51,7 +54,15 @@ class BookingChargeServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new BookingChargeService(chargeRepository, allocationRepository, adjustmentRepository, financeClient, financeAllocationClient);
+        service = new BookingChargeService(
+                chargeRepository,
+                allocationRepository,
+                adjustmentRepository,
+                financeClient,
+                financeAllocationClient,
+                null,
+                bookingBranchResolver
+        );
     }
 
     private FinancePaymentInstruction createValidInstruction() {
@@ -723,5 +734,79 @@ class BookingChargeServiceTest {
                 .add(summary.totalVoidedAmount())
                 .add(summary.totalOpenBalance());
         assertThat(totalAccounted).isEqualByComparingTo(summary.totalOriginalCharges());
+    }
+
+    @Test
+    @DisplayName("P1 Finance SSOT: Thiếu FinanceAllocationClient phải fail-closed ném IllegalStateException")
+    void applyPayment_NullFinanceAllocationClient_ThrowsIllegalStateException() {
+        BookingChargeService serviceWithoutAllocClient = new BookingChargeService(
+                chargeRepository, allocationRepository, adjustmentRepository, financeClient, null
+        );
+
+        UUID chargeId = UUID.randomUUID();
+        BookingCharge charge = new BookingCharge(
+                "CHG-01", financeRequestId, bookingId, customerId, ChargeType.DEPOSIT,
+                new BigDecimal("500000.00"), "VND", Instant.now(), "Deposit", adminUserId, "ID1"
+        );
+        when(chargeRepository.findById(chargeId)).thenReturn(Optional.of(charge));
+        when(allocationRepository.findByFinanceAllocationId(allocationId)).thenReturn(Optional.empty());
+
+        ApplyPaymentToChargeCommand cmd = new ApplyPaymentToChargeCommand(
+                allocationId, transactionId, new BigDecimal("200000.00"), "Pay"
+        );
+
+        assertThatThrownBy(() -> serviceWithoutAllocClient.applyPayment(chargeId, cmd, adminUserId))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Finance allocation client is required for SSOT verification: fail-closed");
+    }
+
+    @Test
+    @DisplayName("P0 Branch Authority: branchId client gửi xung đột với BookingBranchResolver uy tín -> Ném IllegalArgumentException")
+    void createCharge_ConflictingBranchId_ThrowsIllegalArgumentException() {
+        UUID authoritativeBranch = UUID.randomUUID();
+        UUID forgedBranch = UUID.randomUUID();
+
+        FinancePaymentInstruction instruction = createValidInstruction();
+        when(financeClient.get(financeRequestId)).thenReturn(instruction);
+        when(chargeRepository.findByIdempotencyKey("IDEM-BRANCH-ERR")).thenReturn(Optional.empty());
+        when(chargeRepository.existsByChargeCode("CHG-ERR")).thenReturn(false);
+        when(chargeRepository.existsByFinancePaymentRequestId(financeRequestId)).thenReturn(false);
+        when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(authoritativeBranch));
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-ERR", financeRequestId, bookingId, forgedBranch, customerId,
+                ChargeType.DEPOSIT, new BigDecimal("500000.00"), "VND",
+                Instant.now().plus(24, ChronoUnit.HOURS), "Cọc", "IDEM-BRANCH-ERR"
+        );
+
+        assertThatThrownBy(() -> service.createCharge(cmd, adminUserId))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("conflicts with authoritative booking branch");
+    }
+
+    @Test
+    @DisplayName("P0 Branch Authority: BookingBranchResolver xác thực branch uy tín -> Áp dụng đúng branch resolved")
+    void createCharge_AuthoritativeBranchResolved_AppliesCorrectBranch() {
+        UUID authoritativeBranch = UUID.randomUUID();
+
+        FinancePaymentInstruction instruction = createValidInstruction();
+        when(financeClient.get(financeRequestId)).thenReturn(instruction);
+        when(chargeRepository.findByIdempotencyKey("IDEM-BRANCH-OK")).thenReturn(Optional.empty());
+        when(chargeRepository.existsByChargeCode("CHG-OK")).thenReturn(false);
+        when(chargeRepository.existsByFinancePaymentRequestId(financeRequestId)).thenReturn(false);
+        when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(authoritativeBranch));
+        when(chargeRepository.saveAndFlush(any(BookingCharge.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // Client supplies null branchId, resolver supplies authoritativeBranch
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-OK", financeRequestId, bookingId, null, customerId,
+                ChargeType.DEPOSIT, new BigDecimal("500000.00"), "VND",
+                Instant.now().plus(24, ChronoUnit.HOURS), "Cọc", "IDEM-BRANCH-OK"
+        );
+
+        BookingChargeResponse response = service.createCharge(cmd, adminUserId);
+
+        assertThat(response).isNotNull();
+        assertThat(response.branchId()).isEqualTo(authoritativeBranch);
     }
 }

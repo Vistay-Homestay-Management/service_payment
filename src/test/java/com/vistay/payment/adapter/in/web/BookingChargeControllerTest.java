@@ -255,4 +255,183 @@ class BookingChargeControllerTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();
     }
+
+    @Test
+    @DisplayName("P0 Write Scope: Token có quyền write nhưng thiếu Data Scope (không ALL/BRANCH/OWN) -> 403 Forbidden")
+    void createCharge_MissingDataScope_Throws403() {
+        // Staff has write permission but no data scope
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, Map.of("scope", "payment:write"));
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("SCOPE_payment:write"))));
+        SecurityContextHolder.setContext(context);
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-TEST-W1", financeRequestId, bookingId, branchA, customerId,
+                ChargeType.DEPOSIT, new BigDecimal("500000.00"), "VND",
+                Instant.now().plusSeconds(3600), "Deposit", "IDEM-W1"
+        );
+
+        assertThatThrownBy(() -> controller.createCharge(cmd, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    ResponseStatusException rse = (ResponseStatusException) e;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(rse.getReason()).contains("Missing valid write data scope");
+                });
+    }
+
+    @Test
+    @DisplayName("P0 Write Scope: Nhân viên BRANCH scope tạo charge với branchId null -> 403 Forbidden")
+    void createCharge_BranchScope_NullBranchId_Throws403() {
+        Map<String, Object> claims = Map.of(
+                "grants", List.of(Map.of("p", "payment:write", "s", "BRANCH")),
+                "bld", List.of(branchA.toString())
+        );
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))));
+        SecurityContextHolder.setContext(context);
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-TEST-W2", financeRequestId, bookingId, null, customerId,
+                ChargeType.DEPOSIT, new BigDecimal("500000.00"), "VND",
+                Instant.now().plusSeconds(3600), "Deposit", "IDEM-W2"
+        );
+
+        assertThatThrownBy(() -> controller.createCharge(cmd, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    ResponseStatusException rse = (ResponseStatusException) e;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(rse.getReason()).contains("Staff with BRANCH scope cannot modify charges without an assigned branch");
+                });
+    }
+
+    @Test
+    @DisplayName("P0 Write Scope: Nhân viên BRANCH scope tạo charge cho branch khác quyền -> 403 Forbidden")
+    void createCharge_BranchScope_WrongBranch_Throws403() {
+        Map<String, Object> claims = Map.of(
+                "grants", List.of(Map.of("p", "payment:write", "s", "BRANCH")),
+                "bld", List.of(branchA.toString())
+        );
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))));
+        SecurityContextHolder.setContext(context);
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-TEST-W3", financeRequestId, bookingId, branchB, customerId,
+                ChargeType.DEPOSIT, new BigDecimal("500000.00"), "VND",
+                Instant.now().plusSeconds(3600), "Deposit", "IDEM-W3"
+        );
+
+        assertThatThrownBy(() -> controller.createCharge(cmd, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    ResponseStatusException rse = (ResponseStatusException) e;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(rse.getReason()).contains("Staff is not authorized to modify charges for branch");
+                });
+    }
+
+    @Test
+    @DisplayName("P0 Write Scope: Nhân viên OWN scope tạo charge hợp lệ -> 201 Created")
+    void createCharge_OwnScope_Valid_Returns201() {
+        Map<String, Object> claims = Map.of(
+                "grants", List.of(Map.of("p", "payment:write", "s", "OWN"))
+        );
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))));
+        SecurityContextHolder.setContext(context);
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-TEST-W4", financeRequestId, bookingId, branchA, customerId,
+                ChargeType.DEPOSIT, new BigDecimal("500000.00"), "VND",
+                Instant.now().plusSeconds(3600), "Deposit", "IDEM-W4"
+        );
+
+        when(bookingChargeService.createCharge(cmd, staffUserId)).thenReturn(createSampleChargeResponse(customerId, branchA, staffUserId));
+
+        ResponseEntity<BookingChargeResponse> response = controller.createCharge(cmd, jwt);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("P0 Write Scope: Nhân viên OWN scope miễn giảm (waive) charge do người khác tạo -> 403 Forbidden")
+    void waiveCharge_OwnScope_OtherCreator_Throws403() {
+        UUID otherStaff = UUID.randomUUID();
+        Map<String, Object> claims = Map.of(
+                "grants", List.of(Map.of("p", "payment:write", "s", "OWN"))
+        );
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_FINANCE"))));
+        SecurityContextHolder.setContext(context);
+
+        when(bookingChargeService.getChargeById(chargeId)).thenReturn(createSampleChargeResponse(customerId, branchA, otherStaff));
+
+        WaiveBookingChargeCommand cmd = new WaiveBookingChargeCommand(new BigDecimal("50000.00"), "Customer loyalty discount");
+
+        assertThatThrownBy(() -> controller.waiveCharge(chargeId, cmd, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    ResponseStatusException rse = (ResponseStatusException) e;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(rse.getReason()).contains("Staff with OWN scope cannot modify charges created by another actor");
+                });
+    }
+
+    @Test
+    @DisplayName("P1 Read Scope: getChargesByBooking phát hiện bản ghi thứ hai vi phạm branch scope -> 403 Forbidden")
+    void getChargesByBooking_SecondChargeViolatesBranchScope_Throws403() {
+        Map<String, Object> claims = Map.of(
+                "grants", List.of(Map.of("p", "payment:read", "s", "BRANCH")),
+                "bld", List.of(branchA.toString())
+        );
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))));
+        SecurityContextHolder.setContext(context);
+
+        // First charge belongs to branchA (allowed), second charge belongs to branchB (forbidden)
+        BookingChargeResponse charge1 = createSampleChargeResponse(customerId, branchA, staffUserId);
+        BookingChargeResponse charge2 = createSampleChargeResponse(customerId, branchB, staffUserId);
+        when(bookingChargeService.getChargesByBooking(bookingId)).thenReturn(List.of(charge1, charge2));
+
+        assertThatThrownBy(() -> controller.getChargesByBooking(bookingId, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    ResponseStatusException rse = (ResponseStatusException) e;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(rse.getReason()).contains("Staff is not authorized for branch");
+                });
+    }
+
+    @Test
+    @DisplayName("P1 Read Scope: getBookingOpenBalance phát hiện charge vi phạm customer scope -> 403 Forbidden")
+    void getBookingOpenBalance_ChargeViolatesCustomerScope_Throws403() {
+        UUID otherCustomer = UUID.randomUUID();
+        Jwt jwt = createJwt("CUSTOMER:" + customerId, null);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+        SecurityContextHolder.setContext(context);
+
+        BookingChargeResponse otherCharge = createSampleChargeResponse(otherCustomer, branchA, staffUserId);
+        BookingOpenBalanceSummaryResponse summary = new BookingOpenBalanceSummaryResponse(
+                bookingId, new BigDecimal("500000.00"), BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ZERO, new BigDecimal("500000.00"), "VND", 1, List.of(otherCharge)
+        );
+        when(bookingChargeService.getBookingOpenBalanceSummary(bookingId)).thenReturn(summary);
+
+        assertThatThrownBy(() -> controller.getBookingOpenBalance(bookingId, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    ResponseStatusException rse = (ResponseStatusException) e;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(rse.getReason()).contains("Cannot access booking charges belonging to another customer");
+                });
+    }
 }

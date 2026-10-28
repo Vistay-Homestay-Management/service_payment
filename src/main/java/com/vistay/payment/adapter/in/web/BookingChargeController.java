@@ -30,7 +30,7 @@ public class BookingChargeController {
             @Valid @RequestBody CreateBookingChargeCommand command,
             @AuthenticationPrincipal Jwt jwt) {
         UUID actorId = extractUserIdOrThrow(jwt);
-        assertWriteDataScope(command.branchId(), jwt);
+        assertWriteDataScope(command.branchId(), actorId, actorId, jwt);
         BookingChargeResponse response = bookingChargeService.createCharge(command, actorId);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
@@ -53,7 +53,7 @@ public class BookingChargeController {
             @AuthenticationPrincipal Jwt jwt) {
         UUID actorId = extractUserIdOrThrow(jwt);
         BookingChargeResponse charge = bookingChargeService.getChargeById(id);
-        assertWriteDataScope(charge.branchId(), jwt);
+        assertWriteDataScope(charge.branchId(), charge.createdByAdminUserId(), actorId, jwt);
         return ResponseEntity.ok(bookingChargeService.waiveCharge(id, command, actorId));
     }
 
@@ -65,7 +65,7 @@ public class BookingChargeController {
             @AuthenticationPrincipal Jwt jwt) {
         UUID actorId = extractUserIdOrThrow(jwt);
         BookingChargeResponse charge = bookingChargeService.getChargeById(id);
-        assertWriteDataScope(charge.branchId(), jwt);
+        assertWriteDataScope(charge.branchId(), charge.createdByAdminUserId(), actorId, jwt);
         return ResponseEntity.ok(bookingChargeService.cancelCharge(id, command, actorId));
     }
 
@@ -95,8 +95,8 @@ public class BookingChargeController {
             @PathVariable UUID bookingId,
             @AuthenticationPrincipal Jwt jwt) {
         List<BookingChargeResponse> charges = bookingChargeService.getChargesByBooking(bookingId);
-        if (!charges.isEmpty()) {
-            assertReadDataScope(charges.get(0), jwt);
+        for (BookingChargeResponse charge : charges) {
+            assertReadDataScope(charge, jwt);
         }
         return ResponseEntity.ok(charges);
     }
@@ -107,8 +107,8 @@ public class BookingChargeController {
             @PathVariable UUID bookingId,
             @AuthenticationPrincipal Jwt jwt) {
         BookingOpenBalanceSummaryResponse summary = bookingChargeService.getBookingOpenBalanceSummary(bookingId);
-        if (!summary.charges().isEmpty()) {
-            assertReadDataScope(summary.charges().get(0), jwt);
+        for (BookingChargeResponse charge : summary.charges()) {
+            assertReadDataScope(charge, jwt);
         }
         return ResponseEntity.ok(summary);
     }
@@ -161,20 +161,34 @@ public class BookingChargeController {
         throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied: Missing valid data scope for charge");
     }
 
-    private void assertWriteDataScope(UUID branchId, Jwt jwt) {
+    private void assertWriteDataScope(UUID branchId, UUID createdByAdminUserId, UUID actorId, Jwt jwt) {
         if (jwt == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthenticated security context");
         }
         if (hasAllScope(jwt) || hasRole(jwt, "ROLE_ADMIN") || hasRole(jwt, "ROLE_SYSTEM")) {
             return;
         }
-        if (hasScope(jwt, "BRANCH") && branchId != null) {
+        if (hasScope(jwt, "BRANCH")) {
+            if (branchId == null) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Access denied: Staff with BRANCH scope cannot modify charges without an assigned branch");
+            }
             List<String> assignedBranches = extractAssignedBranches(jwt);
             if (!assignedBranches.contains(branchId.toString())) {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                         "Access denied: Staff is not authorized to modify charges for branch " + branchId);
             }
+            return;
         }
+        if (hasScope(jwt, "OWN")) {
+            if (createdByAdminUserId != null && !createdByAdminUserId.equals(actorId)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Access denied: Staff with OWN scope cannot modify charges created by another actor");
+            }
+            return;
+        }
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                "Access denied: Missing valid write data scope (must have ALL, BRANCH, or OWN scope)");
     }
 
     private boolean isStaffCaller() {

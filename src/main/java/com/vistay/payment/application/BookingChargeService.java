@@ -22,6 +22,7 @@ public class BookingChargeService {
     private final BookingChargeAdjustmentRepository adjustmentRepository;
     private final FinancePaymentInstructionClient financeClient;
     private final FinanceAllocationClient financeAllocationClient;
+    private final BookingBranchResolver bookingBranchResolver;
     private final TransactionTemplate writeTxTemplate;
     private final TransactionTemplate readTxTemplate;
 
@@ -30,7 +31,7 @@ public class BookingChargeService {
                                 BookingChargeAdjustmentRepository adjustmentRepository,
                                 @Autowired(required = false) FinancePaymentInstructionClient financeClient,
                                 @Autowired(required = false) FinanceAllocationClient financeAllocationClient) {
-        this(chargeRepository, allocationRepository, adjustmentRepository, financeClient, financeAllocationClient, null);
+        this(chargeRepository, allocationRepository, adjustmentRepository, financeClient, financeAllocationClient, null, null);
     }
 
     public BookingChargeService(BookingChargeRepository chargeRepository,
@@ -39,11 +40,22 @@ public class BookingChargeService {
                                 @Autowired(required = false) FinancePaymentInstructionClient financeClient,
                                 @Autowired(required = false) FinanceAllocationClient financeAllocationClient,
                                 @Autowired(required = false) PlatformTransactionManager transactionManager) {
+        this(chargeRepository, allocationRepository, adjustmentRepository, financeClient, financeAllocationClient, transactionManager, null);
+    }
+
+    public BookingChargeService(BookingChargeRepository chargeRepository,
+                                BookingChargeAllocationRepository allocationRepository,
+                                BookingChargeAdjustmentRepository adjustmentRepository,
+                                @Autowired(required = false) FinancePaymentInstructionClient financeClient,
+                                @Autowired(required = false) FinanceAllocationClient financeAllocationClient,
+                                @Autowired(required = false) PlatformTransactionManager transactionManager,
+                                @Autowired(required = false) BookingBranchResolver bookingBranchResolver) {
         this.chargeRepository = chargeRepository;
         this.allocationRepository = allocationRepository;
         this.adjustmentRepository = adjustmentRepository;
         this.financeClient = financeClient;
         this.financeAllocationClient = financeAllocationClient;
+        this.bookingBranchResolver = bookingBranchResolver;
 
         if (transactionManager != null) {
             this.writeTxTemplate = new TransactionTemplate(transactionManager);
@@ -120,11 +132,25 @@ public class BookingChargeService {
                 ? instruction.currency()
                 : cmd.currency();
 
+        // 3. Authoritative Branch Resolution and Verification
+        UUID effectiveBranchId = cmd.branchId();
+        if (bookingBranchResolver != null) {
+            Optional<UUID> authoritativeBranch = bookingBranchResolver.resolveBranchId(cmd.bookingId());
+            if (authoritativeBranch.isPresent()) {
+                UUID verifiedBranchId = authoritativeBranch.get();
+                if (cmd.branchId() != null && !cmd.branchId().equals(verifiedBranchId)) {
+                    throw new IllegalArgumentException("Requested branch ID (" + cmd.branchId()
+                            + ") conflicts with authoritative booking branch (" + verifiedBranchId + ")");
+                }
+                effectiveBranchId = verifiedBranchId;
+            }
+        }
+
         BookingCharge charge = new BookingCharge(
                 cmd.chargeCode(),
                 cmd.financePaymentRequestId(),
                 cmd.bookingId(),
-                cmd.branchId(),
+                effectiveBranchId,
                 cmd.customerId(),
                 cmd.chargeType(),
                 cmd.originalAmount(),
@@ -169,27 +195,29 @@ public class BookingChargeService {
 
         BookingCharge charge = findChargeOrThrow(chargeId);
 
-        // 2. Strict Finance Allocation SSOT verification
-        if (financeAllocationClient != null) {
-            FinanceAllocationRecord record = financeAllocationClient.getAllocation(cmd.financeAllocationId());
-            if (record == null) {
-                throw new IllegalArgumentException("Finance allocation record not found: " + cmd.financeAllocationId());
-            }
-            if (!record.financePaymentRequestId().equals(charge.getFinancePaymentRequestId())) {
-                throw new IllegalArgumentException("Finance allocation does not match collection order payment request");
-            }
-            if (!record.paymentTransactionId().equals(cmd.paymentTransactionId())) {
-                throw new IllegalArgumentException("Payment transaction ID mismatch with verified Finance allocation");
-            }
-            if (cmd.paymentAmount().compareTo(record.allocatedAmount()) != 0) {
-                throw new IllegalArgumentException("Payment amount (" + cmd.paymentAmount() + ") does not match Finance allocation amount (" + record.allocatedAmount() + ")");
-            }
-            if (!charge.getCurrency().equalsIgnoreCase(record.currency())) {
-                throw new IllegalArgumentException("Currency mismatch with verified Finance allocation");
-            }
-            if (!"CONFIRMED".equalsIgnoreCase(record.status())) {
-                throw new IllegalStateException("Finance allocation is not in CONFIRMED status: " + record.status());
-            }
+        // 2. Strict Finance Allocation SSOT verification (Fail-closed)
+        if (financeAllocationClient == null) {
+            throw new IllegalStateException("Finance allocation client is required for SSOT verification: fail-closed");
+        }
+
+        FinanceAllocationRecord record = financeAllocationClient.getAllocation(cmd.financeAllocationId());
+        if (record == null) {
+            throw new IllegalArgumentException("Finance allocation record not found: " + cmd.financeAllocationId());
+        }
+        if (!record.financePaymentRequestId().equals(charge.getFinancePaymentRequestId())) {
+            throw new IllegalArgumentException("Finance allocation does not match collection order payment request");
+        }
+        if (!record.paymentTransactionId().equals(cmd.paymentTransactionId())) {
+            throw new IllegalArgumentException("Payment transaction ID mismatch with verified Finance allocation");
+        }
+        if (cmd.paymentAmount().compareTo(record.allocatedAmount()) != 0) {
+            throw new IllegalArgumentException("Payment amount (" + cmd.paymentAmount() + ") does not match Finance allocation amount (" + record.allocatedAmount() + ")");
+        }
+        if (!charge.getCurrency().equalsIgnoreCase(record.currency())) {
+            throw new IllegalArgumentException("Currency mismatch with verified Finance allocation");
+        }
+        if (!"CONFIRMED".equalsIgnoreCase(record.status())) {
+            throw new IllegalStateException("Finance allocation is not in CONFIRMED status: " + record.status());
         }
 
         charge.applyPayment(cmd.paymentAmount(), cmd.paymentTransactionId());

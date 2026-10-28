@@ -15,6 +15,7 @@ import java.util.UUID;
  * accepting unverified caller assertions.
  */
 @Component
+@ConditionalOnMissingBean(FinanceAllocationClient.class)
 public class FailClosedFinanceAllocationClient implements FinanceAllocationClient {
 
     @Override
