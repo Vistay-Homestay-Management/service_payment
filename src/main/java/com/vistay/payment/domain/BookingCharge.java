@@ -10,11 +10,14 @@ import java.util.UUID;
 public class BookingCharge {
 
     @Id
-    @Column(name = "id", nullable = false, updatable = false)
-    private UUID id = UUID.randomUUID();
+    @GeneratedValue(strategy = GenerationType.AUTO)
+    private UUID id;
 
     @Column(name = "charge_code", nullable = false, unique = true, length = 60)
     private String chargeCode;
+
+    @Column(name = "finance_payment_request_id")
+    private UUID financePaymentRequestId;
 
     @Column(name = "booking_id", nullable = false)
     private UUID bookingId;
@@ -35,6 +38,9 @@ public class BookingCharge {
     @Column(name = "waived_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal waivedAmount = BigDecimal.ZERO;
 
+    @Column(name = "voided_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal voidedAmount = BigDecimal.ZERO;
+
     @Column(name = "outstanding_balance", nullable = false, precision = 19, scale = 4)
     private BigDecimal outstandingBalance;
 
@@ -54,6 +60,15 @@ public class BookingCharge {
     @Column(name = "cancellation_reason", length = 500)
     private String cancellationReason;
 
+    @Column(name = "cancelled_by_admin_user_id")
+    private UUID cancelledByAdminUserId;
+
+    @Column(name = "waiver_reason", length = 500)
+    private String waiverReason;
+
+    @Column(name = "waived_by_admin_user_id")
+    private UUID waivedByAdminUserId;
+
     @Column(name = "last_payment_transaction_id")
     private UUID lastPaymentTransactionId;
 
@@ -65,7 +80,7 @@ public class BookingCharge {
 
     @Version
     @Column(name = "version", nullable = false)
-    private long version = 0;
+    private long version;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
@@ -77,6 +92,20 @@ public class BookingCharge {
     }
 
     public BookingCharge(String chargeCode,
+                         UUID bookingId,
+                         UUID customerId,
+                         ChargeType chargeType,
+                         BigDecimal originalAmount,
+                         String currency,
+                         Instant dueDate,
+                         String description,
+                         UUID createdByAdminUserId,
+                         String idempotencyKey) {
+        this(chargeCode, null, bookingId, customerId, chargeType, originalAmount, currency, dueDate, description, createdByAdminUserId, idempotencyKey);
+    }
+
+    public BookingCharge(String chargeCode,
+                         UUID financePaymentRequestId,
                          UUID bookingId,
                          UUID customerId,
                          ChargeType chargeType,
@@ -109,12 +138,14 @@ public class BookingCharge {
         }
 
         this.chargeCode = chargeCode.trim();
+        this.financePaymentRequestId = financePaymentRequestId;
         this.bookingId = bookingId;
         this.customerId = customerId;
         this.chargeType = chargeType;
         this.originalAmount = originalAmount;
         this.paidAmount = BigDecimal.ZERO;
         this.waivedAmount = BigDecimal.ZERO;
+        this.voidedAmount = BigDecimal.ZERO;
         this.outstandingBalance = originalAmount;
         this.currency = (currency != null && !currency.isBlank()) ? currency.trim().toUpperCase() : "VND";
         this.dueDate = dueDate;
@@ -145,7 +176,7 @@ public class BookingCharge {
         this.lastPaymentTransactionId = transactionId;
 
         if (this.outstandingBalance.compareTo(BigDecimal.ZERO) == 0) {
-            this.status = ChargeStatus.PAID;
+            this.status = (this.waivedAmount.compareTo(BigDecimal.ZERO) > 0) ? ChargeStatus.SETTLED : ChargeStatus.PAID;
         } else {
             this.status = ChargeStatus.PARTIALLY_PAID;
         }
@@ -174,17 +205,22 @@ public class BookingCharge {
         this.outstandingBalance = this.outstandingBalance.subtract(amountToWaive);
 
         if (this.outstandingBalance.compareTo(BigDecimal.ZERO) == 0) {
-            this.status = (this.paidAmount.compareTo(BigDecimal.ZERO) > 0) ? ChargeStatus.PAID : ChargeStatus.WAIVED;
+            this.status = (this.paidAmount.compareTo(BigDecimal.ZERO) > 0) ? ChargeStatus.SETTLED : ChargeStatus.WAIVED;
         } else {
             this.status = ChargeStatus.PARTIALLY_PAID;
         }
 
-        this.cancellationReason = "WAIVED by " + approverAdminId + " (Amount: " + amountToWaive + "): " + reason.trim();
+        this.waiverReason = reason.trim();
+        this.waivedByAdminUserId = approverAdminId;
         this.updatedAt = Instant.now();
     }
 
     public void cancel(String reason) {
-        if (status == ChargeStatus.PAID || status == ChargeStatus.CANCELLED || status == ChargeStatus.WAIVED) {
+        cancel(null, reason);
+    }
+
+    public void cancel(UUID cancelledByUserId, String reason) {
+        if (status == ChargeStatus.PAID || status == ChargeStatus.CANCELLED || status == ChargeStatus.WAIVED || status == ChargeStatus.SETTLED) {
             throw new IllegalStateException("Cannot cancel charge with status: " + status);
         }
         if (paidAmount.compareTo(BigDecimal.ZERO) > 0) {
@@ -194,27 +230,33 @@ public class BookingCharge {
             throw new IllegalArgumentException("Cancellation reason cannot be blank");
         }
         this.status = ChargeStatus.CANCELLED;
+        this.voidedAmount = this.outstandingBalance;
         this.outstandingBalance = BigDecimal.ZERO;
-        this.waivedAmount = this.originalAmount; // Balances formula original = paid + waived + outstanding
         this.cancellationReason = reason.trim();
+        this.cancelledByAdminUserId = cancelledByUserId;
         this.updatedAt = Instant.now();
     }
 
     // Getters
     public UUID getId() { return id; }
     public String getChargeCode() { return chargeCode; }
+    public UUID getFinancePaymentRequestId() { return financePaymentRequestId; }
     public UUID getBookingId() { return bookingId; }
     public UUID getCustomerId() { return customerId; }
     public ChargeType getChargeType() { return chargeType; }
     public BigDecimal getOriginalAmount() { return originalAmount; }
     public BigDecimal getPaidAmount() { return paidAmount; }
     public BigDecimal getWaivedAmount() { return waivedAmount; }
+    public BigDecimal getVoidedAmount() { return voidedAmount; }
     public BigDecimal getOutstandingBalance() { return outstandingBalance; }
     public String getCurrency() { return currency; }
     public Instant getDueDate() { return dueDate; }
     public ChargeStatus getStatus() { return status; }
     public String getDescription() { return description; }
     public String getCancellationReason() { return cancellationReason; }
+    public UUID getCancelledByAdminUserId() { return cancelledByAdminUserId; }
+    public String getWaiverReason() { return waiverReason; }
+    public UUID getWaivedByAdminUserId() { return waivedByAdminUserId; }
     public UUID getLastPaymentTransactionId() { return lastPaymentTransactionId; }
     public UUID getCreatedByAdminUserId() { return createdByAdminUserId; }
     public String getIdempotencyKey() { return idempotencyKey; }

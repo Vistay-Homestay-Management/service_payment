@@ -6,6 +6,6 @@ public enum ChargeStatus {
     PAID,
     CANCELLED,
     EXPIRED,
-    WAIVED
+    WAIVED,
+    SETTLED
 }
-

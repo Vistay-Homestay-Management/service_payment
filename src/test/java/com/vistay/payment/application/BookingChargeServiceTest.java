@@ -29,6 +29,9 @@ class BookingChargeServiceTest {
     @Mock
     private BookingChargeRepository chargeRepository;
 
+    @Mock
+    private FinancePaymentInstructionClient financeClient;
+
     private BookingChargeService service;
 
     private final UUID bookingId = UUID.randomUUID();
@@ -38,7 +41,7 @@ class BookingChargeServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new BookingChargeService(chargeRepository);
+        service = new BookingChargeService(chargeRepository, financeClient);
     }
 
     @Test
@@ -70,8 +73,87 @@ class BookingChargeServiceTest {
         assertThat(response.originalAmount()).isEqualByComparingTo("500000.00");
         assertThat(response.paidAmount()).isEqualByComparingTo("0.00");
         assertThat(response.waivedAmount()).isEqualByComparingTo("0.00");
+        assertThat(response.voidedAmount()).isEqualByComparingTo("0.00");
         assertThat(response.outstandingBalance()).isEqualByComparingTo("500000.00");
         assertThat(response.status()).isEqualTo(ChargeStatus.OPEN);
+    }
+
+    @Test
+    @DisplayName("SCRUM-371: Khởi tạo lệnh thu xác thực qua Finance Payment Instruction (SSOT)")
+    void createCharge_WithFinanceInstruction_Success() {
+        UUID financeRequestId = UUID.randomUUID();
+        FinancePaymentInstruction instruction = new FinancePaymentInstruction(
+                financeRequestId,
+                bookingId,
+                customerId,
+                new BigDecimal("1500000.00"),
+                "VND",
+                "Tiền phòng deluxe",
+                "REF-01",
+                Instant.now().plus(48, ChronoUnit.HOURS)
+        );
+
+        when(financeClient.get(financeRequestId)).thenReturn(instruction);
+        when(chargeRepository.findByIdempotencyKey("IDEM-FIN-001")).thenReturn(Optional.empty());
+        when(chargeRepository.existsByChargeCode("CHG-FIN-001")).thenReturn(false);
+        when(chargeRepository.save(any(BookingCharge.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-FIN-001",
+                financeRequestId,
+                bookingId,
+                customerId,
+                ChargeType.FULL_PAYMENT,
+                new BigDecimal("1500000.00"),
+                "VND",
+                Instant.now().plus(48, ChronoUnit.HOURS),
+                "Thu tiền phòng deluxe",
+                adminUserId,
+                "IDEM-FIN-001"
+        );
+
+        BookingChargeResponse response = service.createCharge(cmd, adminUserId);
+
+        assertThat(response).isNotNull();
+        assertThat(response.financePaymentRequestId()).isEqualTo(financeRequestId);
+        assertThat(response.originalAmount()).isEqualByComparingTo("1500000.00");
+        assertThat(response.outstandingBalance()).isEqualByComparingTo("1500000.00");
+    }
+
+    @Test
+    @DisplayName("SCRUM-371: Từ chối tạo lệnh thu nếu số tiền không khớp Finance Payment Instruction")
+    void createCharge_FinanceMismatchAmount_ThrowsException() {
+        UUID financeRequestId = UUID.randomUUID();
+        FinancePaymentInstruction instruction = new FinancePaymentInstruction(
+                financeRequestId,
+                bookingId,
+                customerId,
+                new BigDecimal("1500000.00"),
+                "VND",
+                "Tiền phòng",
+                "REF-01",
+                Instant.now().plus(48, ChronoUnit.HOURS)
+        );
+
+        when(financeClient.get(financeRequestId)).thenReturn(instruction);
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-FIN-002",
+                financeRequestId,
+                bookingId,
+                customerId,
+                ChargeType.FULL_PAYMENT,
+                new BigDecimal("2000000.00"), // Sai lệch số tiền so với Finance
+                "VND",
+                Instant.now().plus(48, ChronoUnit.HOURS),
+                "Sai số tiền",
+                adminUserId,
+                "IDEM-FIN-002"
+        );
+
+        assertThatThrownBy(() -> service.createCharge(cmd))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not match Finance instruction amount");
     }
 
     @Test
@@ -107,33 +189,37 @@ class BookingChargeServiceTest {
 
         BookingChargeResponse response = service.createCharge(cmd);
 
+        assertThat(response).isNotNull();
         assertThat(response.chargeCode()).isEqualTo("CHG-BK-202610-001");
         verify(chargeRepository, never()).save(any());
     }
 
     @Test
-    @DisplayName("SCRUM-371: Thanh toán một phần (Partial Payment) cập nhật giảm open balance, lưu transaction ID và chuyển PARTIALLY_PAID")
-    void applyPayment_Partial_Success() {
+    @DisplayName("SCRUM-371: Ghi nhận thanh toán một phần (Partially Paid) và cập nhật số dư công nợ còn lại")
+    void applyPayment_PartialPayment_Success() {
         BookingCharge charge = new BookingCharge(
-                "CHG-BK-PARTIAL",
+                "CHG-BK-202610-002",
                 bookingId,
                 customerId,
                 ChargeType.FULL_PAYMENT,
                 new BigDecimal("1000000.00"),
                 "VND",
                 Instant.now().plus(24, ChronoUnit.HOURS),
-                "Tổng tiền phòng",
+                "Tiền thuê homestay trọn gói",
                 adminUserId,
-                "IDEM-PARTIAL"
+                "IDEM-CHG-002"
         );
 
         when(chargeRepository.findById(charge.getId())).thenReturn(Optional.of(charge));
         when(chargeRepository.save(any(BookingCharge.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        BookingChargeResponse response = service.applyPayment(
-                charge.getId(),
-                new ApplyPaymentToChargeCommand(new BigDecimal("400000.00"), transactionId)
+        ApplyPaymentToChargeCommand cmd = new ApplyPaymentToChargeCommand(
+                new BigDecimal("400000.00"),
+                transactionId,
+                "Thanh toán đợt 1 qua VietQR"
         );
+
+        BookingChargeResponse response = service.applyPayment(charge.getId(), cmd);
 
         assertThat(response.status()).isEqualTo(ChargeStatus.PARTIALLY_PAID);
         assertThat(response.paidAmount()).isEqualByComparingTo("400000.00");
@@ -142,93 +228,142 @@ class BookingChargeServiceTest {
     }
 
     @Test
-    @DisplayName("SCRUM-371: Thanh toán toàn bộ xóa hết công nợ mở (outstandingBalance = 0) và chuyển PAID")
-    void applyPayment_Full_Success() {
+    @DisplayName("SCRUM-371: Ghi nhận thanh toán toàn bộ (Fully Paid) và đóng số dư công nợ về 0")
+    void applyPayment_FullPayment_Success() {
         BookingCharge charge = new BookingCharge(
-                "CHG-BK-FULL",
+                "CHG-BK-202610-003",
                 bookingId,
                 customerId,
                 ChargeType.DEPOSIT,
                 new BigDecimal("300000.00"),
                 "VND",
                 Instant.now().plus(24, ChronoUnit.HOURS),
-                "Cọc phòng",
+                "Cọc dịch vụ",
                 adminUserId,
-                "IDEM-FULL"
+                "IDEM-CHG-003"
         );
 
         when(chargeRepository.findById(charge.getId())).thenReturn(Optional.of(charge));
         when(chargeRepository.save(any(BookingCharge.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        BookingChargeResponse response = service.applyPayment(
-                charge.getId(),
-                new ApplyPaymentToChargeCommand(new BigDecimal("300000.00"), transactionId)
+        ApplyPaymentToChargeCommand cmd = new ApplyPaymentToChargeCommand(
+                new BigDecimal("300000.00"),
+                transactionId,
+                "Thanh toán đầy đủ"
         );
+
+        BookingChargeResponse response = service.applyPayment(charge.getId(), cmd);
 
         assertThat(response.status()).isEqualTo(ChargeStatus.PAID);
         assertThat(response.paidAmount()).isEqualByComparingTo("300000.00");
         assertThat(response.outstandingBalance()).isEqualByComparingTo("0.00");
-        assertThat(response.lastPaymentTransactionId()).isEqualTo(transactionId);
     }
 
     @Test
-    @DisplayName("SCRUM-371: Thanh toán vượt quá số dư công nợ còn lại bị ném lỗi")
-    void applyPayment_Overpayment_ThrowsException() {
+    @DisplayName("SCRUM-371: Từ chối thanh toán số tiền vượt quá số dư công nợ còn lại")
+    void applyPayment_ExceedingOutstandingBalance_ThrowsException() {
         BookingCharge charge = new BookingCharge(
-                "CHG-BK-OVER",
+                "CHG-BK-202610-004",
                 bookingId,
                 customerId,
-                ChargeType.DEPOSIT,
+                ChargeType.PENALTY,
                 new BigDecimal("200000.00"),
                 "VND",
                 Instant.now().plus(24, ChronoUnit.HOURS),
-                "Cọc phòng",
+                "Phạt trễ giờ",
                 adminUserId,
-                "IDEM-OVER"
+                "IDEM-CHG-004"
         );
 
         when(chargeRepository.findById(charge.getId())).thenReturn(Optional.of(charge));
 
-        assertThatThrownBy(() -> service.applyPayment(
-                charge.getId(),
-                new ApplyPaymentToChargeCommand(new BigDecimal("250000.00"), transactionId)
-        ))
+        ApplyPaymentToChargeCommand cmd = new ApplyPaymentToChargeCommand(
+                new BigDecimal("250000.00"), // Lớn hơn 200,000
+                transactionId,
+                "Thanh toán dư"
+        );
+
+        assertThatThrownBy(() -> service.applyPayment(charge.getId(), cmd))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("exceeds outstanding balance");
     }
 
     @Test
-    @DisplayName("SCRUM-371: Miễn giảm công nợ (Waive) bảo toàn bất biến original = paid + waived + outstanding")
-    void waiveCharge_Success() {
+    @DisplayName("SCRUM-371: Miễn giảm một phần khoản thu (Waive) và tất toán khi kết hợp thanh toán (SETTLED)")
+    void waiveCharge_PartialThenSettle_Success() {
         BookingCharge charge = new BookingCharge(
-                "CHG-BK-WAIVE",
+                "CHG-BK-WAIVE-SETTLE",
                 bookingId,
                 customerId,
-                ChargeType.EXTRA_SERVICE,
-                new BigDecimal("200000.00"),
+                ChargeType.DAMAGE_DEPOSIT,
+                new BigDecimal("500000.00"),
                 "VND",
                 Instant.now().plus(24, ChronoUnit.HOURS),
-                "Phí dịch vụ đặc biệt",
+                "Cọc hư hại tài sản",
                 adminUserId,
-                "IDEM-WAIVE"
+                "IDEM-WAIVE-SETTLE"
         );
 
-        // Thanh toán trước 50k
-        charge.applyPayment(new BigDecimal("50000.00"), transactionId);
-        // Còn lại 150k, miễn giảm 150k
+        // Khách thanh toán trước 200k
+        charge.applyPayment(new BigDecimal("200000.00"), transactionId);
+
         when(chargeRepository.findById(charge.getId())).thenReturn(Optional.of(charge));
         when(chargeRepository.save(any(BookingCharge.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        BookingChargeResponse response = service.waiveCharge(
-                charge.getId(),
-                new WaiveBookingChargeCommand(new BigDecimal("150000.00"), adminUserId, "Chính sách ưu đãi khách VIP")
+        // Quản trị viên miễn giảm nốt 300k còn lại
+        WaiveBookingChargeCommand cmd = new WaiveBookingChargeCommand(
+                new BigDecimal("300000.00"),
+                adminUserId,
+                "Khách quen, miễn giảm phần hư hại nhẹ"
         );
 
-        assertThat(response.paidAmount()).isEqualByComparingTo("50000.00");
-        assertThat(response.waivedAmount()).isEqualByComparingTo("150000.00");
+        BookingChargeResponse response = service.waiveCharge(charge.getId(), cmd, adminUserId);
+
+        assertThat(response.status()).isEqualTo(ChargeStatus.SETTLED);
+        assertThat(response.paidAmount()).isEqualByComparingTo("200000.00");
+        assertThat(response.waivedAmount()).isEqualByComparingTo("300000.00");
+        assertThat(response.voidedAmount()).isEqualByComparingTo("0.00");
         assertThat(response.outstandingBalance()).isEqualByComparingTo("0.00");
-        // Bất biến: paid (50k) + waived (150k) + outstanding (0k) = original (200k)
-        assertThat(response.paidAmount().add(response.waivedAmount()).add(response.outstandingBalance()))
+        assertThat(response.waiverReason()).isEqualTo("Khách quen, miễn giảm phần hư hại nhẹ");
+        assertThat(response.waivedByAdminUserId()).isEqualTo(adminUserId);
+
+        // Bất biến: paid (200k) + waived (300k) + voided (0) + outstanding (0) = original (500k)
+        assertThat(response.paidAmount().add(response.waivedAmount()).add(response.voidedAmount()).add(response.outstandingBalance()))
+                .isEqualByComparingTo(response.originalAmount());
+    }
+
+    @Test
+    @DisplayName("SCRUM-371: Hủy khoản thu (Cancel) khi chưa thanh toán - chuyển sang voidedAmount mà không làm tăng waivedAmount")
+    void cancelCharge_Unpaid_Success() {
+        BookingCharge charge = new BookingCharge(
+                "CHG-BK-CANCEL-OK",
+                bookingId,
+                customerId,
+                ChargeType.EXTRA_SERVICE,
+                new BigDecimal("800000.00"),
+                "VND",
+                Instant.now().plus(24, ChronoUnit.HOURS),
+                "Dịch vụ BBQ sân vườn",
+                adminUserId,
+                "IDEM-CANCEL-OK"
+        );
+
+        when(chargeRepository.findById(charge.getId())).thenReturn(Optional.of(charge));
+        when(chargeRepository.save(any(BookingCharge.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CancelBookingChargeCommand cmd = new CancelBookingChargeCommand("Khách hủy đặt tiệc BBQ trước 24h");
+        BookingChargeResponse response = service.cancelCharge(charge.getId(), cmd, adminUserId);
+
+        assertThat(response.status()).isEqualTo(ChargeStatus.CANCELLED);
+        assertThat(response.paidAmount()).isEqualByComparingTo("0.00");
+        assertThat(response.waivedAmount()).isEqualByComparingTo("0.00"); // Không bị ghi đè thành 800k!
+        assertThat(response.voidedAmount()).isEqualByComparingTo("800000.00"); // Ghi nhận đúng bản chất voided
+        assertThat(response.outstandingBalance()).isEqualByComparingTo("0.00");
+        assertThat(response.cancellationReason()).isEqualTo("Khách hủy đặt tiệc BBQ trước 24h");
+        assertThat(response.cancelledByAdminUserId()).isEqualTo(adminUserId);
+
+        // Bất biến: paid (0) + waived (0) + voided (800k) + outstanding (0) = original (800k)
+        assertThat(response.paidAmount().add(response.waivedAmount()).add(response.voidedAmount()).add(response.outstandingBalance()))
                 .isEqualByComparingTo(response.originalAmount());
     }
 
@@ -253,7 +388,8 @@ class BookingChargeServiceTest {
 
         assertThatThrownBy(() -> service.cancelCharge(
                 charge.getId(),
-                new CancelBookingChargeCommand("Khách yêu cầu hủy")
+                new CancelBookingChargeCommand("Khách yêu cầu hủy"),
+                adminUserId
         ))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Cannot cancel charge with existing paid amount");

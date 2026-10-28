@@ -12,6 +12,7 @@ import java.util.UUID;
 
 public record CreateBookingChargeCommand(
         @NotBlank @Size(max = 60) String chargeCode,
+        UUID financePaymentRequestId,
         @NotNull UUID bookingId,
         @NotNull UUID customerId,
         @NotNull ChargeType chargeType,
@@ -22,5 +23,17 @@ public record CreateBookingChargeCommand(
         UUID createdByAdminUserId,
         @NotBlank @Size(max = 160) String idempotencyKey
 ) {
+    public CreateBookingChargeCommand(
+            String chargeCode,
+            UUID bookingId,
+            UUID customerId,
+            ChargeType chargeType,
+            BigDecimal originalAmount,
+            String currency,
+            Instant dueDate,
+            String description,
+            UUID createdByAdminUserId,
+            String idempotencyKey) {
+        this(chargeCode, null, bookingId, customerId, chargeType, originalAmount, currency, dueDate, description, createdByAdminUserId, idempotencyKey);
+    }
 }
-

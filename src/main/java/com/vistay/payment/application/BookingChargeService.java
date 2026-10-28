@@ -3,10 +3,12 @@ package com.vistay.payment.application;
 import com.vistay.payment.domain.BookingCharge;
 import com.vistay.payment.domain.BookingChargeRepository;
 import com.vistay.payment.domain.ChargeStatus;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
@@ -16,12 +18,19 @@ import java.util.UUID;
 public class BookingChargeService {
 
     private final BookingChargeRepository chargeRepository;
+    private final FinancePaymentInstructionClient financeClient;
 
-    public BookingChargeService(BookingChargeRepository chargeRepository) {
+    public BookingChargeService(BookingChargeRepository chargeRepository,
+                                @Autowired(required = false) FinancePaymentInstructionClient financeClient) {
         this.chargeRepository = chargeRepository;
+        this.financeClient = financeClient;
     }
 
     public BookingChargeResponse createCharge(CreateBookingChargeCommand cmd) {
+        return createCharge(cmd, null);
+    }
+
+    public BookingChargeResponse createCharge(CreateBookingChargeCommand cmd, UUID actorId) {
         var existing = chargeRepository.findByIdempotencyKey(cmd.idempotencyKey());
         if (existing.isPresent()) {
             return BookingChargeResponse.from(existing.get());
@@ -31,8 +40,28 @@ public class BookingChargeService {
             throw new IllegalArgumentException("Charge code already exists: " + cmd.chargeCode());
         }
 
+        // Validate with Finance Payment Instruction if present
+        if (cmd.financePaymentRequestId() != null && financeClient != null) {
+            FinancePaymentInstruction instruction = financeClient.get(cmd.financePaymentRequestId());
+            if (instruction == null) {
+                throw new IllegalArgumentException("Finance payment instruction not found: " + cmd.financePaymentRequestId());
+            }
+            if (instruction.expiresAt() != null && instruction.expiresAt().isBefore(Instant.now())) {
+                throw new IllegalArgumentException("Finance payment instruction is expired");
+            }
+            if (cmd.originalAmount() != null && cmd.originalAmount().compareTo(instruction.amount()) != 0) {
+                throw new IllegalArgumentException("Charge amount (" + cmd.originalAmount() + ") does not match Finance instruction amount (" + instruction.amount() + ")");
+            }
+            if (cmd.bookingId() != null && !cmd.bookingId().equals(instruction.bookingId())) {
+                throw new IllegalArgumentException("Booking ID does not match Finance instruction booking ID");
+            }
+        }
+
+        UUID createdBy = actorId != null ? actorId : cmd.createdByAdminUserId();
+
         BookingCharge charge = new BookingCharge(
                 cmd.chargeCode(),
+                cmd.financePaymentRequestId(),
                 cmd.bookingId(),
                 cmd.customerId(),
                 cmd.chargeType(),
@@ -40,7 +69,7 @@ public class BookingChargeService {
                 cmd.currency(),
                 cmd.dueDate(),
                 cmd.description(),
-                cmd.createdByAdminUserId(),
+                createdBy,
                 cmd.idempotencyKey()
         );
 
@@ -54,14 +83,26 @@ public class BookingChargeService {
     }
 
     public BookingChargeResponse waiveCharge(UUID chargeId, WaiveBookingChargeCommand cmd) {
+        return waiveCharge(chargeId, cmd, null);
+    }
+
+    public BookingChargeResponse waiveCharge(UUID chargeId, WaiveBookingChargeCommand cmd, UUID actorId) {
         BookingCharge charge = findChargeOrThrow(chargeId);
-        charge.waive(cmd.waiveAmount(), cmd.approverAdminId(), cmd.reason());
+        UUID approverId = actorId != null ? actorId : cmd.approverAdminId();
+        if (approverId == null) {
+            throw new IllegalArgumentException("Approver admin user ID cannot be null");
+        }
+        charge.waive(cmd.waiveAmount(), approverId, cmd.reason());
         return BookingChargeResponse.from(chargeRepository.save(charge));
     }
 
     public BookingChargeResponse cancelCharge(UUID chargeId, CancelBookingChargeCommand cmd) {
+        return cancelCharge(chargeId, cmd, null);
+    }
+
+    public BookingChargeResponse cancelCharge(UUID chargeId, CancelBookingChargeCommand cmd, UUID actorId) {
         BookingCharge charge = findChargeOrThrow(chargeId);
-        charge.cancel(cmd.reason());
+        charge.cancel(actorId, cmd.reason());
         return BookingChargeResponse.from(chargeRepository.save(charge));
     }
 

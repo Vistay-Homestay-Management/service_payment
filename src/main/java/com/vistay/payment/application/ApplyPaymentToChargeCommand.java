@@ -7,6 +7,10 @@ import java.util.UUID;
 
 public record ApplyPaymentToChargeCommand(
         @NotNull @DecimalMin("0.01") BigDecimal paymentAmount,
-        @NotNull UUID paymentTransactionId
+        @NotNull UUID paymentTransactionId,
+        String note
 ) {
+    public ApplyPaymentToChargeCommand(BigDecimal paymentAmount, UUID paymentTransactionId) {
+        this(paymentAmount, paymentTransactionId, null);
+    }
 }
