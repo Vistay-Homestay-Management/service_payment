@@ -10,17 +10,19 @@ import java.util.UUID;
 public class BookingCharge {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.AUTO)
-    private UUID id;
+    private UUID id = UUID.randomUUID();
 
     @Column(name = "charge_code", nullable = false, unique = true, length = 60)
     private String chargeCode;
 
-    @Column(name = "finance_payment_request_id")
+    @Column(name = "finance_payment_request_id", nullable = false)
     private UUID financePaymentRequestId;
 
     @Column(name = "booking_id", nullable = false)
     private UUID bookingId;
+
+    @Column(name = "branch_id")
+    private UUID branchId;
 
     @Column(name = "customer_id", nullable = false)
     private UUID customerId;
@@ -92,19 +94,6 @@ public class BookingCharge {
     }
 
     public BookingCharge(String chargeCode,
-                         UUID bookingId,
-                         UUID customerId,
-                         ChargeType chargeType,
-                         BigDecimal originalAmount,
-                         String currency,
-                         Instant dueDate,
-                         String description,
-                         UUID createdByAdminUserId,
-                         String idempotencyKey) {
-        this(chargeCode, null, bookingId, customerId, chargeType, originalAmount, currency, dueDate, description, createdByAdminUserId, idempotencyKey);
-    }
-
-    public BookingCharge(String chargeCode,
                          UUID financePaymentRequestId,
                          UUID bookingId,
                          UUID customerId,
@@ -115,8 +104,26 @@ public class BookingCharge {
                          String description,
                          UUID createdByAdminUserId,
                          String idempotencyKey) {
+        this(chargeCode, financePaymentRequestId, bookingId, null, customerId, chargeType, originalAmount, currency, dueDate, description, createdByAdminUserId, idempotencyKey);
+    }
+
+    public BookingCharge(String chargeCode,
+                         UUID financePaymentRequestId,
+                         UUID bookingId,
+                         UUID branchId,
+                         UUID customerId,
+                         ChargeType chargeType,
+                         BigDecimal originalAmount,
+                         String currency,
+                         Instant dueDate,
+                         String description,
+                         UUID createdByAdminUserId,
+                         String idempotencyKey) {
         if (chargeCode == null || chargeCode.isBlank()) {
             throw new IllegalArgumentException("Charge code cannot be blank");
+        }
+        if (financePaymentRequestId == null) {
+            throw new IllegalArgumentException("Finance payment request ID cannot be null");
         }
         if (bookingId == null) {
             throw new IllegalArgumentException("Booking ID cannot be null");
@@ -140,6 +147,7 @@ public class BookingCharge {
         this.chargeCode = chargeCode.trim();
         this.financePaymentRequestId = financePaymentRequestId;
         this.bookingId = bookingId;
+        this.branchId = branchId;
         this.customerId = customerId;
         this.chargeType = chargeType;
         this.originalAmount = originalAmount;
@@ -193,16 +201,15 @@ public class BookingCharge {
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("Waive reason cannot be blank");
         }
-        BigDecimal amountToWaive = (waiveAmount != null && waiveAmount.compareTo(BigDecimal.ZERO) > 0)
-                ? waiveAmount
-                : this.outstandingBalance;
-
-        if (amountToWaive.compareTo(this.outstandingBalance) > 0) {
-            throw new IllegalArgumentException("Waive amount (" + amountToWaive + ") cannot exceed outstanding balance (" + this.outstandingBalance + ")");
+        if (waiveAmount == null || waiveAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Waive amount must be specified and greater than zero");
+        }
+        if (waiveAmount.compareTo(this.outstandingBalance) > 0) {
+            throw new IllegalArgumentException("Waive amount (" + waiveAmount + ") cannot exceed outstanding balance (" + this.outstandingBalance + ")");
         }
 
-        this.waivedAmount = this.waivedAmount.add(amountToWaive);
-        this.outstandingBalance = this.outstandingBalance.subtract(amountToWaive);
+        this.waivedAmount = this.waivedAmount.add(waiveAmount);
+        this.outstandingBalance = this.outstandingBalance.subtract(waiveAmount);
 
         if (this.outstandingBalance.compareTo(BigDecimal.ZERO) == 0) {
             this.status = (this.paidAmount.compareTo(BigDecimal.ZERO) > 0) ? ChargeStatus.SETTLED : ChargeStatus.WAIVED;
@@ -215,11 +222,10 @@ public class BookingCharge {
         this.updatedAt = Instant.now();
     }
 
-    public void cancel(String reason) {
-        cancel(null, reason);
-    }
-
     public void cancel(UUID cancelledByUserId, String reason) {
+        if (cancelledByUserId == null) {
+            throw new IllegalArgumentException("Cancelled by admin user ID cannot be null");
+        }
         if (status == ChargeStatus.PAID || status == ChargeStatus.CANCELLED || status == ChargeStatus.WAIVED || status == ChargeStatus.SETTLED) {
             throw new IllegalStateException("Cannot cancel charge with status: " + status);
         }
@@ -242,6 +248,7 @@ public class BookingCharge {
     public String getChargeCode() { return chargeCode; }
     public UUID getFinancePaymentRequestId() { return financePaymentRequestId; }
     public UUID getBookingId() { return bookingId; }
+    public UUID getBranchId() { return branchId; }
     public UUID getCustomerId() { return customerId; }
     public ChargeType getChargeType() { return chargeType; }
     public BigDecimal getOriginalAmount() { return originalAmount; }

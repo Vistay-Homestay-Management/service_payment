@@ -9,6 +9,7 @@ public record BookingOpenBalanceSummaryResponse(
         BigDecimal totalOriginalCharges,
         BigDecimal totalPaidAmount,
         BigDecimal totalWaivedAmount,
+        BigDecimal totalVoidedAmount,
         BigDecimal totalOpenBalance,
         String currency,
         int activeChargeCount,

@@ -1,168 +1,362 @@
 package com.vistay.payment.application;
 
-import com.vistay.payment.domain.BookingCharge;
-import com.vistay.payment.domain.BookingChargeRepository;
-import com.vistay.payment.domain.ChargeStatus;
+import com.vistay.payment.domain.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.UUID;
+import java.util.*;
 
 @Service
-@Transactional
 public class BookingChargeService {
 
     private final BookingChargeRepository chargeRepository;
+    private final BookingChargeAllocationRepository allocationRepository;
+    private final BookingChargeAdjustmentRepository adjustmentRepository;
     private final FinancePaymentInstructionClient financeClient;
+    private final FinanceAllocationClient financeAllocationClient;
+    private final TransactionTemplate writeTxTemplate;
+    private final TransactionTemplate readTxTemplate;
 
     public BookingChargeService(BookingChargeRepository chargeRepository,
-                                @Autowired(required = false) FinancePaymentInstructionClient financeClient) {
-        this.chargeRepository = chargeRepository;
-        this.financeClient = financeClient;
+                                BookingChargeAllocationRepository allocationRepository,
+                                BookingChargeAdjustmentRepository adjustmentRepository,
+                                @Autowired(required = false) FinancePaymentInstructionClient financeClient,
+                                @Autowired(required = false) FinanceAllocationClient financeAllocationClient) {
+        this(chargeRepository, allocationRepository, adjustmentRepository, financeClient, financeAllocationClient, null);
     }
 
-    public BookingChargeResponse createCharge(CreateBookingChargeCommand cmd) {
-        return createCharge(cmd, null);
+    public BookingChargeService(BookingChargeRepository chargeRepository,
+                                BookingChargeAllocationRepository allocationRepository,
+                                BookingChargeAdjustmentRepository adjustmentRepository,
+                                @Autowired(required = false) FinancePaymentInstructionClient financeClient,
+                                @Autowired(required = false) FinanceAllocationClient financeAllocationClient,
+                                @Autowired(required = false) PlatformTransactionManager transactionManager) {
+        this.chargeRepository = chargeRepository;
+        this.allocationRepository = allocationRepository;
+        this.adjustmentRepository = adjustmentRepository;
+        this.financeClient = financeClient;
+        this.financeAllocationClient = financeAllocationClient;
+
+        if (transactionManager != null) {
+            this.writeTxTemplate = new TransactionTemplate(transactionManager);
+            this.writeTxTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+            this.readTxTemplate = new TransactionTemplate(transactionManager);
+            this.readTxTemplate.setReadOnly(true);
+            this.readTxTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        } else {
+            // Passthrough template for unit tests without full transaction manager
+            TransactionTemplate passthrough = new TransactionTemplate() {
+                @Override
+                public <T> T execute(TransactionCallback<T> action) {
+                    return action.doInTransaction(new SimpleTransactionStatus());
+                }
+            };
+            this.writeTxTemplate = passthrough;
+            this.readTxTemplate = passthrough;
+        }
     }
 
     public BookingChargeResponse createCharge(CreateBookingChargeCommand cmd, UUID actorId) {
-        var existing = chargeRepository.findByIdempotencyKey(cmd.idempotencyKey());
-        if (existing.isPresent()) {
-            return BookingChargeResponse.from(existing.get());
+        if (actorId == null) {
+            throw new SecurityException("Authenticated actor ID is required to create a booking charge");
         }
 
-        if (chargeRepository.existsByChargeCode(cmd.chargeCode())) {
+        // 1. Idempotency pre-check
+        Optional<BookingCharge> existing = readTxTemplate.execute(status ->
+                chargeRepository.findByIdempotencyKey(cmd.idempotencyKey()));
+        if (existing != null && existing.isPresent()) {
+            BookingCharge existingCharge = existing.get();
+            verifyCreatePayloadMatches(existingCharge, cmd);
+            return BookingChargeResponse.from(existingCharge);
+        }
+
+        Boolean codeExists = readTxTemplate.execute(status ->
+                chargeRepository.existsByChargeCode(cmd.chargeCode()));
+        if (Boolean.TRUE.equals(codeExists)) {
             throw new IllegalArgumentException("Charge code already exists: " + cmd.chargeCode());
         }
 
-        // Validate with Finance Payment Instruction if present
-        if (cmd.financePaymentRequestId() != null && financeClient != null) {
-            FinancePaymentInstruction instruction = financeClient.get(cmd.financePaymentRequestId());
-            if (instruction == null) {
-                throw new IllegalArgumentException("Finance payment instruction not found: " + cmd.financePaymentRequestId());
-            }
-            if (instruction.expiresAt() != null && instruction.expiresAt().isBefore(Instant.now())) {
-                throw new IllegalArgumentException("Finance payment instruction is expired");
-            }
-            if (cmd.originalAmount() != null && cmd.originalAmount().compareTo(instruction.amount()) != 0) {
-                throw new IllegalArgumentException("Charge amount (" + cmd.originalAmount() + ") does not match Finance instruction amount (" + instruction.amount() + ")");
-            }
-            if (cmd.bookingId() != null && !cmd.bookingId().equals(instruction.bookingId())) {
-                throw new IllegalArgumentException("Booking ID does not match Finance instruction booking ID");
-            }
+        Boolean finReqExists = readTxTemplate.execute(status ->
+                chargeRepository.existsByFinancePaymentRequestId(cmd.financePaymentRequestId()));
+        if (Boolean.TRUE.equals(finReqExists)) {
+            throw new IllegalArgumentException("Booking charge already exists for Finance Payment Request: " + cmd.financePaymentRequestId());
         }
 
-        UUID createdBy = actorId != null ? actorId : cmd.createdByAdminUserId();
+        // 2. Strict Finance SSOT Validation (Fail-closed)
+        if (financeClient == null) {
+            throw new IllegalStateException("Finance client is unavailable for SSOT verification");
+        }
+
+        FinancePaymentInstruction instruction = financeClient.get(cmd.financePaymentRequestId());
+        if (instruction == null) {
+            throw new IllegalArgumentException("Finance payment instruction not found: " + cmd.financePaymentRequestId());
+        }
+        if (instruction.expiresAt() != null && instruction.expiresAt().isBefore(Instant.now())) {
+            throw new IllegalArgumentException("Finance payment instruction is expired");
+        }
+        if (instruction.amount() != null && cmd.originalAmount().compareTo(instruction.amount()) != 0) {
+            throw new IllegalArgumentException("Charge amount (" + cmd.originalAmount() + ") does not match Finance instruction amount (" + instruction.amount() + ")");
+        }
+        if (instruction.bookingId() != null && !cmd.bookingId().equals(instruction.bookingId())) {
+            throw new IllegalArgumentException("Booking ID does not match Finance instruction booking ID");
+        }
+        if (instruction.customerId() != null && !cmd.customerId().equals(instruction.customerId())) {
+            throw new IllegalArgumentException("Customer ID does not match Finance instruction customer ID");
+        }
+        if (instruction.currency() != null && cmd.currency() != null && !cmd.currency().equalsIgnoreCase(instruction.currency())) {
+            throw new IllegalArgumentException("Currency does not match Finance instruction currency");
+        }
+
+        String effectiveCurrency = (instruction.currency() != null && !instruction.currency().isBlank())
+                ? instruction.currency()
+                : cmd.currency();
 
         BookingCharge charge = new BookingCharge(
                 cmd.chargeCode(),
                 cmd.financePaymentRequestId(),
                 cmd.bookingId(),
+                cmd.branchId(),
                 cmd.customerId(),
                 cmd.chargeType(),
                 cmd.originalAmount(),
-                cmd.currency(),
+                effectiveCurrency,
                 cmd.dueDate(),
                 cmd.description(),
-                createdBy,
+                actorId,
                 cmd.idempotencyKey()
         );
 
-        return BookingChargeResponse.from(chargeRepository.save(charge));
+        try {
+            return writeTxTemplate.execute(status ->
+                    BookingChargeResponse.from(chargeRepository.saveAndFlush(charge)));
+        } catch (DataIntegrityViolationException ex) {
+            // Concurrent race condition handling:
+            // Write transaction has rolled back and closed. Query winner in clean read transaction.
+            Optional<BookingCharge> raceExisting = readTxTemplate.execute(status ->
+                    chargeRepository.findByIdempotencyKey(cmd.idempotencyKey()));
+            if (raceExisting != null && raceExisting.isPresent()) {
+                BookingCharge winner = raceExisting.get();
+                verifyCreatePayloadMatches(winner, cmd);
+                return BookingChargeResponse.from(winner);
+            }
+            throw ex;
+        }
     }
 
-    public BookingChargeResponse applyPayment(UUID chargeId, ApplyPaymentToChargeCommand cmd) {
+    public BookingChargeResponse applyPayment(UUID chargeId, ApplyPaymentToChargeCommand cmd, UUID actorId) {
+        // 1. Anti-replay and deduplication pre-check
+        Optional<BookingChargeAllocation> existingAlloc = readTxTemplate.execute(status ->
+                allocationRepository.findByFinanceAllocationId(cmd.financeAllocationId()));
+        if (existingAlloc != null && existingAlloc.isPresent()) {
+            BookingChargeAllocation alloc = existingAlloc.get();
+            if (alloc.getChargeId().equals(chargeId)
+                    && alloc.getPaymentTransactionId().equals(cmd.paymentTransactionId())
+                    && alloc.getAllocatedAmount().compareTo(cmd.paymentAmount()) == 0) {
+                // Idempotent replay: exact same allocation re-sent
+                return BookingChargeResponse.from(findChargeOrThrow(chargeId));
+            }
+            throw new IllegalStateException("Duplicate finance allocation ID already recorded: " + cmd.financeAllocationId());
+        }
+
         BookingCharge charge = findChargeOrThrow(chargeId);
-        charge.applyPayment(cmd.paymentAmount(), cmd.paymentTransactionId());
-        return BookingChargeResponse.from(chargeRepository.save(charge));
-    }
 
-    public BookingChargeResponse waiveCharge(UUID chargeId, WaiveBookingChargeCommand cmd) {
-        return waiveCharge(chargeId, cmd, null);
+        // 2. Strict Finance Allocation SSOT verification
+        if (financeAllocationClient != null) {
+            FinanceAllocationRecord record = financeAllocationClient.getAllocation(cmd.financeAllocationId());
+            if (record == null) {
+                throw new IllegalArgumentException("Finance allocation record not found: " + cmd.financeAllocationId());
+            }
+            if (!record.financePaymentRequestId().equals(charge.getFinancePaymentRequestId())) {
+                throw new IllegalArgumentException("Finance allocation does not match collection order payment request");
+            }
+            if (!record.paymentTransactionId().equals(cmd.paymentTransactionId())) {
+                throw new IllegalArgumentException("Payment transaction ID mismatch with verified Finance allocation");
+            }
+            if (cmd.paymentAmount().compareTo(record.allocatedAmount()) != 0) {
+                throw new IllegalArgumentException("Payment amount (" + cmd.paymentAmount() + ") does not match Finance allocation amount (" + record.allocatedAmount() + ")");
+            }
+            if (!charge.getCurrency().equalsIgnoreCase(record.currency())) {
+                throw new IllegalArgumentException("Currency mismatch with verified Finance allocation");
+            }
+            if (!"CONFIRMED".equalsIgnoreCase(record.status())) {
+                throw new IllegalStateException("Finance allocation is not in CONFIRMED status: " + record.status());
+            }
+        }
+
+        charge.applyPayment(cmd.paymentAmount(), cmd.paymentTransactionId());
+
+        BookingChargeAllocation allocation = new BookingChargeAllocation(
+                charge.getId(),
+                cmd.financeAllocationId(),
+                cmd.paymentTransactionId(),
+                cmd.paymentAmount(),
+                charge.getCurrency(),
+                actorId,
+                cmd.note()
+        );
+
+        try {
+            return writeTxTemplate.execute(status -> {
+                allocationRepository.saveAndFlush(allocation);
+                return BookingChargeResponse.from(chargeRepository.saveAndFlush(charge));
+            });
+        } catch (DataIntegrityViolationException ex) {
+            // Concurrent race condition handling on finance_allocation_id
+            Optional<BookingChargeAllocation> raceAlloc = readTxTemplate.execute(status ->
+                    allocationRepository.findByFinanceAllocationId(cmd.financeAllocationId()));
+            if (raceAlloc != null && raceAlloc.isPresent()) {
+                BookingChargeAllocation alloc = raceAlloc.get();
+                if (alloc.getChargeId().equals(chargeId)
+                        && alloc.getPaymentTransactionId().equals(cmd.paymentTransactionId())
+                        && alloc.getAllocatedAmount().compareTo(cmd.paymentAmount()) == 0) {
+                    return BookingChargeResponse.from(findChargeOrThrow(chargeId));
+                }
+                throw new IllegalStateException("Duplicate finance allocation ID under race condition: " + cmd.financeAllocationId());
+            }
+            throw ex;
+        }
     }
 
     public BookingChargeResponse waiveCharge(UUID chargeId, WaiveBookingChargeCommand cmd, UUID actorId) {
-        BookingCharge charge = findChargeOrThrow(chargeId);
-        UUID approverId = actorId != null ? actorId : cmd.approverAdminId();
-        if (approverId == null) {
-            throw new IllegalArgumentException("Approver admin user ID cannot be null");
+        if (actorId == null) {
+            throw new SecurityException("Authenticated approver admin user ID is required");
         }
-        charge.waive(cmd.waiveAmount(), approverId, cmd.reason());
-        return BookingChargeResponse.from(chargeRepository.save(charge));
-    }
+        return writeTxTemplate.execute(status -> {
+            BookingCharge charge = findChargeOrThrow(chargeId);
+            charge.waive(cmd.waiveAmount(), actorId, cmd.reason());
 
-    public BookingChargeResponse cancelCharge(UUID chargeId, CancelBookingChargeCommand cmd) {
-        return cancelCharge(chargeId, cmd, null);
+            BookingChargeAdjustment adjustment = new BookingChargeAdjustment(
+                    charge.getId(),
+                    "WAIVER",
+                    cmd.waiveAmount(),
+                    cmd.reason(),
+                    actorId
+            );
+            adjustmentRepository.save(adjustment);
+
+            return BookingChargeResponse.from(chargeRepository.saveAndFlush(charge));
+        });
     }
 
     public BookingChargeResponse cancelCharge(UUID chargeId, CancelBookingChargeCommand cmd, UUID actorId) {
-        BookingCharge charge = findChargeOrThrow(chargeId);
-        charge.cancel(actorId, cmd.reason());
-        return BookingChargeResponse.from(chargeRepository.save(charge));
+        if (actorId == null) {
+            throw new SecurityException("Authenticated actor ID is required to cancel charge");
+        }
+        return writeTxTemplate.execute(status -> {
+            BookingCharge charge = findChargeOrThrow(chargeId);
+            BigDecimal voidAmount = charge.getOutstandingBalance();
+            charge.cancel(actorId, cmd.reason());
+
+            if (voidAmount.compareTo(BigDecimal.ZERO) > 0) {
+                BookingChargeAdjustment adjustment = new BookingChargeAdjustment(
+                        charge.getId(),
+                        "CANCELLATION",
+                        voidAmount,
+                        cmd.reason(),
+                        actorId
+                );
+                adjustmentRepository.save(adjustment);
+            }
+
+            return BookingChargeResponse.from(chargeRepository.saveAndFlush(charge));
+        });
     }
 
-    @Transactional(readOnly = true)
     public BookingChargeResponse getChargeById(UUID id) {
         return BookingChargeResponse.from(findChargeOrThrow(id));
     }
 
-    @Transactional(readOnly = true)
     public BookingChargeResponse getChargeByCode(String chargeCode) {
-        return chargeRepository.findByChargeCode(chargeCode)
-                .map(BookingChargeResponse::from)
-                .orElseThrow(() -> new NoSuchElementException("Booking charge not found with code: " + chargeCode));
+        return readTxTemplate.execute(status ->
+                chargeRepository.findByChargeCode(chargeCode)
+                        .map(BookingChargeResponse::from)
+                        .orElseThrow(() -> new NoSuchElementException("Booking charge not found with code: " + chargeCode)));
     }
 
-    @Transactional(readOnly = true)
     public List<BookingChargeResponse> getChargesByBooking(UUID bookingId) {
-        return chargeRepository.findByBookingId(bookingId).stream()
-                .map(BookingChargeResponse::from)
-                .toList();
+        return readTxTemplate.execute(status ->
+                chargeRepository.findByBookingId(bookingId).stream()
+                        .map(BookingChargeResponse::from)
+                        .toList());
     }
 
-    @Transactional(readOnly = true)
     public BookingOpenBalanceSummaryResponse getBookingOpenBalanceSummary(UUID bookingId) {
-        List<BookingCharge> charges = chargeRepository.findByBookingId(bookingId);
+        return readTxTemplate.execute(status -> {
+            List<BookingCharge> charges = chargeRepository.findByBookingId(bookingId);
 
-        BigDecimal totalOriginal = BigDecimal.ZERO;
-        BigDecimal totalPaid = BigDecimal.ZERO;
-        BigDecimal totalWaived = BigDecimal.ZERO;
-        BigDecimal totalOpen = BigDecimal.ZERO;
-        int activeCount = 0;
-        String currency = "VND";
+            BigDecimal totalOriginal = BigDecimal.ZERO;
+            BigDecimal totalPaid = BigDecimal.ZERO;
+            BigDecimal totalWaived = BigDecimal.ZERO;
+            BigDecimal totalVoided = BigDecimal.ZERO;
+            BigDecimal totalOpen = BigDecimal.ZERO;
+            int activeCount = 0;
+            String currency = null;
+            Set<String> currencies = new HashSet<>();
 
-        for (BookingCharge c : charges) {
-            currency = c.getCurrency();
-            if (c.getStatus() != ChargeStatus.CANCELLED) {
+            for (BookingCharge c : charges) {
+                currencies.add(c.getCurrency());
+                if (currency == null) {
+                    currency = c.getCurrency();
+                }
                 totalOriginal = totalOriginal.add(c.getOriginalAmount());
-                totalPaid = totalPaid.add(c.getPaidAmount());
-                totalWaived = totalWaived.add(c.getWaivedAmount());
-                totalOpen = totalOpen.add(c.getOutstandingBalance());
-                if (c.getStatus() == ChargeStatus.OPEN || c.getStatus() == ChargeStatus.PARTIALLY_PAID) {
-                    activeCount++;
+                if (c.getStatus() != ChargeStatus.CANCELLED) {
+                    totalPaid = totalPaid.add(c.getPaidAmount());
+                    totalWaived = totalWaived.add(c.getWaivedAmount());
+                    totalOpen = totalOpen.add(c.getOutstandingBalance());
+                    if (c.getStatus() == ChargeStatus.OPEN || c.getStatus() == ChargeStatus.PARTIALLY_PAID) {
+                        activeCount++;
+                    }
+                } else {
+                    totalVoided = totalVoided.add(c.getVoidedAmount());
                 }
             }
-        }
 
-        return new BookingOpenBalanceSummaryResponse(
-                bookingId,
-                totalOriginal,
-                totalPaid,
-                totalWaived,
-                totalOpen,
-                currency,
-                activeCount,
-                charges.stream().map(BookingChargeResponse::from).toList()
-        );
+            if (currencies.size() > 1) {
+                throw new IllegalStateException("Multiple currencies found across charges for booking: " + bookingId + " -> " + currencies);
+            }
+
+            if (currency == null) {
+                currency = "VND";
+            }
+
+            return new BookingOpenBalanceSummaryResponse(
+                    bookingId,
+                    totalOriginal,
+                    totalPaid,
+                    totalWaived,
+                    totalVoided,
+                    totalOpen,
+                    currency,
+                    activeCount,
+                    charges.stream().map(BookingChargeResponse::from).toList()
+            );
+        });
     }
 
-    private BookingCharge findChargeOrThrow(UUID id) {
-        return chargeRepository.findById(id)
-                .orElseThrow(() -> new NoSuchElementException("Booking charge not found with id: " + id));
+    public BookingCharge findChargeOrThrow(UUID id) {
+        Optional<BookingCharge> found = readTxTemplate.execute(status -> chargeRepository.findById(id));
+        if (found == null || found.isEmpty()) {
+            throw new NoSuchElementException("Booking charge not found with id: " + id);
+        }
+        return found.get();
+    }
+
+    private void verifyCreatePayloadMatches(BookingCharge existing, CreateBookingChargeCommand cmd) {
+        boolean match = existing.getFinancePaymentRequestId().equals(cmd.financePaymentRequestId())
+                && existing.getOriginalAmount().compareTo(cmd.originalAmount()) == 0
+                && existing.getBookingId().equals(cmd.bookingId())
+                && existing.getCustomerId().equals(cmd.customerId());
+        if (!match) {
+            throw new IllegalStateException("Idempotency key collision with differing payload: " + cmd.idempotencyKey());
+        }
     }
 }

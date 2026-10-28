@@ -17,7 +17,11 @@ public interface BookingChargeRepository extends JpaRepository<BookingCharge, UU
 
     Optional<BookingCharge> findByIdempotencyKey(String idempotencyKey);
 
+    Optional<BookingCharge> findByFinancePaymentRequestId(UUID financePaymentRequestId);
+
     boolean existsByChargeCode(String chargeCode);
+
+    boolean existsByFinancePaymentRequestId(UUID financePaymentRequestId);
 
     List<BookingCharge> findByBookingId(UUID bookingId);
 
