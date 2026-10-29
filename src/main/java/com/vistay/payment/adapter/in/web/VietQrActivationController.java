@@ -5,7 +5,6 @@ import com.vistay.payment.domain.VietQrPlanStatus;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
@@ -14,139 +13,141 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.List;
 import java.util.UUID;
 
+import static com.vistay.payment.adapter.in.web.VietQrActivationSecurity.*;
+
 @RestController
 @RequestMapping("/api/v1/payment/vietqr/activation-plans")
 public class VietQrActivationController {
 
     private final VietQrActivationPlanService activationPlanService;
-    private final BookingChargeAuthorizationService authorizationService;
 
-    public VietQrActivationController(
-            VietQrActivationPlanService activationPlanService,
-            BookingChargeAuthorizationService authorizationService) {
+    public VietQrActivationController(VietQrActivationPlanService activationPlanService) {
         this.activationPlanService = activationPlanService;
-        this.authorizationService = authorizationService;
     }
 
     @PostMapping
-    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> createPlan(
             @Valid @RequestBody CreateActivationPlanCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.extractActorId(jwt);
-        if (!actorId.equals(command.createdByAdminUserId())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Authenticated actor does not match plan creator");
-        }
-        VietQrActivationPlanResponse response = activationPlanService.createPlan(command);
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_CREATE);
+        String actorId = extractActorIdentity(jwt);
+        VietQrActivationPlanResponse response = activationPlanService.createPlan(command, actorId);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     @PostMapping("/{id}/uat")
-    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> recordUatEvidence(
             @PathVariable UUID id,
-            @Valid @RequestBody RecordUatEvidenceCommand command) {
-        return ResponseEntity.ok(activationPlanService.recordUatEvidence(id, command));
+            @Valid @RequestBody RecordUatEvidenceCommand command,
+            @AuthenticationPrincipal Jwt jwt) {
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_UAT);
+        String actorId = extractActorIdentity(jwt);
+        return ResponseEntity.ok(activationPlanService.recordUatEvidence(id, command, actorId));
     }
 
     @PostMapping("/{id}/callback")
-    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> configureCallback(
             @PathVariable UUID id,
-            @Valid @RequestBody ConfigureCallbackCommand command) {
-        return ResponseEntity.ok(activationPlanService.configureCallback(id, command));
+            @Valid @RequestBody ConfigureCallbackCommand command,
+            @AuthenticationPrincipal Jwt jwt) {
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_CALLBACK);
+        String actorId = extractActorIdentity(jwt);
+        return ResponseEntity.ok(activationPlanService.configureCallback(id, command, actorId));
     }
 
     @PostMapping("/{id}/submit")
-    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> submitForApproval(
             @PathVariable UUID id,
-            @Valid @RequestBody SubmitActivationPlanCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.extractActorId(jwt);
-        if (!actorId.equals(command.submittedByAdminUserId())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Authenticated actor does not match submitter");
-        }
-        return ResponseEntity.ok(activationPlanService.submitForApproval(id, command));
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_SUBMIT);
+        String actorId = extractActorIdentity(jwt);
+        return ResponseEntity.ok(activationPlanService.submitForApproval(id, actorId));
     }
 
     @PostMapping("/{id}/approve")
-    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> approvePlan(
             @PathVariable UUID id,
-            @Valid @RequestBody ApproveActivationPlanCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.extractActorId(jwt);
-        if (!actorId.equals(command.approvedByAdminUserId())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Authenticated actor does not match approver");
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_APPROVE);
+        String actorId = extractActorIdentity(jwt);
+        try {
+            return ResponseEntity.ok(activationPlanService.approvePlan(id, actorId));
+        } catch (IllegalStateException conflict) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, conflict.getMessage());
         }
-        return ResponseEntity.ok(activationPlanService.approvePlan(id, command));
     }
 
     @PostMapping("/{id}/activate")
-    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> activatePlan(
             @PathVariable UUID id,
-            @RequestParam(required = false) UUID operatorId,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.extractActorId(jwt);
-        if (operatorId != null && !operatorId.equals(actorId)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Supplied operatorId does not match authenticated actor");
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_ACTIVATE);
+        String actorId = extractActorIdentity(jwt);
+        try {
+            return ResponseEntity.ok(activationPlanService.activatePlan(id, actorId));
+        } catch (IllegalStateException conflict) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, conflict.getMessage());
         }
-        return ResponseEntity.ok(activationPlanService.activatePlan(id, actorId));
     }
 
     @PostMapping("/{id}/reject")
-    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> rejectPlan(
             @PathVariable UUID id,
             @Valid @RequestBody RejectActivationPlanCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.extractActorId(jwt);
-        if (!actorId.equals(command.reviewedByAdminUserId())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Authenticated actor does not match reviewer");
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_APPROVE);
+        String actorId = extractActorIdentity(jwt);
+        try {
+            return ResponseEntity.ok(activationPlanService.rejectPlan(id, command, actorId));
+        } catch (IllegalStateException conflict) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, conflict.getMessage());
         }
-        return ResponseEntity.ok(activationPlanService.rejectPlan(id, command));
     }
 
     @PostMapping("/{id}/suspend")
-    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> suspendPlan(
             @PathVariable UUID id,
-            @RequestParam(required = false) UUID operatorId,
-            @RequestParam(required = false) String reason,
+            @RequestBody(required = false) SuspendActivationPlanCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.extractActorId(jwt);
-        if (operatorId != null && !operatorId.equals(actorId)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Supplied operatorId does not match authenticated actor");
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_SUSPEND);
+        String actorId = extractActorIdentity(jwt);
+        try {
+            return ResponseEntity.ok(activationPlanService.suspendPlan(id, command, actorId));
+        } catch (IllegalStateException conflict) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, conflict.getMessage());
         }
-        return ResponseEntity.ok(activationPlanService.suspendPlan(id, actorId, reason));
     }
 
     @GetMapping("/{id}")
-    @PreAuthorize("hasAnyAuthority('payment:activation:read', 'SCOPE_payment:activation:read', 'payment:read', 'SCOPE_payment:read')")
-    public ResponseEntity<VietQrActivationPlanResponse> getPlanById(@PathVariable UUID id) {
+    public ResponseEntity<VietQrActivationPlanResponse> getPlanById(
+            @PathVariable UUID id,
+            @AuthenticationPrincipal Jwt jwt) {
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_READ);
         return ResponseEntity.ok(activationPlanService.getPlanById(id));
     }
 
     @GetMapping("/code/{planCode}")
-    @PreAuthorize("hasAnyAuthority('payment:activation:read', 'SCOPE_payment:activation:read', 'payment:read', 'SCOPE_payment:read')")
-    public ResponseEntity<VietQrActivationPlanResponse> getPlanByCode(@PathVariable String planCode) {
+    public ResponseEntity<VietQrActivationPlanResponse> getPlanByCode(
+            @PathVariable String planCode,
+            @AuthenticationPrincipal Jwt jwt) {
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_READ);
         return ResponseEntity.ok(activationPlanService.getPlanByCode(planCode));
     }
 
     @GetMapping("/active")
-    @PreAuthorize("hasAnyAuthority('payment:activation:read', 'SCOPE_payment:activation:read', 'payment:read', 'SCOPE_payment:read')")
-    public ResponseEntity<VietQrActivationPlanResponse> getActivePlan() {
+    public ResponseEntity<VietQrActivationPlanResponse> getActivePlan(
+            @AuthenticationPrincipal Jwt jwt) {
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_READ);
         return activationPlanService.getActivePlan()
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyAuthority('payment:activation:read', 'SCOPE_payment:activation:read', 'payment:read', 'SCOPE_payment:read')")
     public ResponseEntity<List<VietQrActivationPlanResponse>> listPlans(
-            @RequestParam(required = false) VietQrPlanStatus status) {
+            @RequestParam(required = false) VietQrPlanStatus status,
+            @AuthenticationPrincipal Jwt jwt) {
+        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_READ);
         return ResponseEntity.ok(activationPlanService.listPlans(status));
     }
 }

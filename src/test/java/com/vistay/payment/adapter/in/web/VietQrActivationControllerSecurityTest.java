@@ -91,7 +91,7 @@ class VietQrActivationControllerSecurityTest {
                 "970422", "MBBank", "0123456789", "VISTAY HOMESTAY",
                 PaymentActivationMode.GENERATE_ONLY, status,
                 false, null, null, null, null, false,
-                adminUserId, null, null, null, null,
+                "ADMIN:" + adminUserId, null, null, null, null,
                 0L, Instant.now(), Instant.now()
         );
     }
@@ -104,7 +104,7 @@ class VietQrActivationControllerSecurityTest {
     }
 
     @Test
-    @DisplayName("P0-04 VietQR Security: Caller without payment:activation:write -> 403 Forbidden")
+    @DisplayName("P0-04 VietQR Security: Caller without vietqr:plan:activate -> 403 Forbidden")
     void activatePlan_UnauthorizedRole_Returns403() throws Exception {
         mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
                         .with(jwt().jwt(j -> j.subject("USER:" + UUID.randomUUID()))
@@ -113,7 +113,7 @@ class VietQrActivationControllerSecurityTest {
     }
 
     @Test
-    @DisplayName("P0-04 Elimination of Admin Bypass: ROLE_ADMIN without payment:activation:write -> 403 Forbidden")
+    @DisplayName("P0-04 Elimination of Admin Bypass: ROLE_ADMIN without vietqr:plan:activate -> 403 Forbidden")
     void activatePlan_AdminWithoutActivationGrant_Returns403() throws Exception {
         mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
                         .with(jwt().jwt(j -> j.subject("ADMIN:" + adminUserId))
@@ -122,29 +122,36 @@ class VietQrActivationControllerSecurityTest {
     }
 
     @Test
-    @DisplayName("P0-04 VietQR Security: Mismatched operatorId parameter vs authenticated actor -> 403 Forbidden")
-    void activatePlan_MismatchedOperatorId_Returns403() throws Exception {
+    @DisplayName("P0-04 VietQR Security: Request operatorId cannot override authenticated actor")
+    void activatePlan_RequestOperatorIdCannotOverrideAuthenticatedActor() throws Exception {
         UUID spoofedOperatorId = UUID.randomUUID();
-        mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
-                        .param("operatorId", spoofedOperatorId.toString())
-                        .with(jwt().jwt(j -> j.subject("ADMIN:" + adminUserId))
-                                .authorities(new SimpleGrantedAuthority("SCOPE_payment:activation:write"))))
-                .andExpect(status().isForbidden());
-    }
-
-    @Test
-    @DisplayName("P0-04 VietQR Security: Valid caller with payment:activation:write activates plan -> 200 OK")
-    void activatePlan_ValidCaller_Success() throws Exception {
-        when(activationPlanService.activatePlan(planId, adminUserId))
+        String authenticatedActor = "ADMIN:" + adminUserId;
+        when(activationPlanService.activatePlan(planId, authenticatedActor))
                 .thenReturn(samplePlanResponse(VietQrPlanStatus.ACTIVE));
 
         mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
-                        .with(jwt().jwt(j -> j.subject("ADMIN:" + adminUserId))
-                                .authorities(new SimpleGrantedAuthority("SCOPE_payment:activation:write"))))
+                        .param("operatorId", spoofedOperatorId.toString())
+                        .with(jwt().jwt(j -> j.subject(authenticatedActor))
+                                .authorities(new SimpleGrantedAuthority("SCOPE_vietqr:plan:activate"))))
+                .andExpect(status().isOk());
+
+        verify(activationPlanService).activatePlan(planId, authenticatedActor);
+    }
+
+    @Test
+    @DisplayName("P0-04 VietQR Security: Valid caller with vietqr:plan:activate activates plan -> 200 OK")
+    void activatePlan_ValidCaller_Success() throws Exception {
+        String authenticatedActor = "ADMIN:" + adminUserId;
+        when(activationPlanService.activatePlan(planId, authenticatedActor))
+                .thenReturn(samplePlanResponse(VietQrPlanStatus.ACTIVE));
+
+        mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
+                        .with(jwt().jwt(j -> j.subject(authenticatedActor))
+                                .authorities(new SimpleGrantedAuthority("SCOPE_vietqr:plan:activate"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
 
-        verify(activationPlanService).activatePlan(planId, adminUserId);
+        verify(activationPlanService).activatePlan(planId, authenticatedActor);
     }
 
     @Test
@@ -173,14 +180,14 @@ class VietQrActivationControllerSecurityTest {
     }
 
     @Test
-    @DisplayName("P0-04 VietQR Security: Caller with payment:activation:read reads active plan -> 200 OK")
+    @DisplayName("P0-04 VietQR Security: Caller with vietqr:plan:read reads active plan -> 200 OK")
     void getActivePlan_WithReadPermission_Returns200() throws Exception {
         when(activationPlanService.getActivePlan())
                 .thenReturn(Optional.of(samplePlanResponse(VietQrPlanStatus.ACTIVE)));
 
         mockMvc.perform(get("/api/v1/payment/vietqr/activation-plans/active")
                         .with(jwt().jwt(j -> j.subject("ADMIN:" + adminUserId))
-                                .authorities(new SimpleGrantedAuthority("SCOPE_payment:activation:read"))))
+                                .authorities(new SimpleGrantedAuthority("SCOPE_vietqr:plan:read"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.planCode").value("PLAN-2026-001"));
     }

@@ -21,7 +21,7 @@ public class VietQrActivationPlanService {
         this.planRepository = planRepository;
     }
 
-    public VietQrActivationPlanResponse createPlan(CreateActivationPlanCommand cmd) {
+    public VietQrActivationPlanResponse createPlan(CreateActivationPlanCommand cmd, String creatorActorId) {
         if (planRepository.existsByPlanCode(cmd.planCode())) {
             throw new IllegalArgumentException("Activation plan code already exists: " + cmd.planCode());
         }
@@ -35,51 +35,52 @@ public class VietQrActivationPlanService {
                 cmd.bankAccountNumber(),
                 cmd.bankAccountName(),
                 cmd.targetActivationMode(),
-                cmd.createdByAdminUserId()
+                creatorActorId
         );
 
         return VietQrActivationPlanResponse.from(planRepository.save(plan));
     }
 
-    public VietQrActivationPlanResponse recordUatEvidence(UUID planId, RecordUatEvidenceCommand cmd) {
+    public VietQrActivationPlanResponse recordUatEvidence(UUID planId, RecordUatEvidenceCommand cmd, String actorId) {
         VietQrActivationPlan plan = findPlanOrThrow(planId);
         plan.recordUatEvidence(cmd.testReference(), cmd.notes());
         return VietQrActivationPlanResponse.from(planRepository.save(plan));
     }
 
-    public VietQrActivationPlanResponse configureCallback(UUID planId, ConfigureCallbackCommand cmd) {
+    public VietQrActivationPlanResponse configureCallback(UUID planId, ConfigureCallbackCommand cmd, String actorId) {
         VietQrActivationPlan plan = findPlanOrThrow(planId);
         plan.configureCallback(cmd.callbackUrl(), cmd.secretConfigured());
         return VietQrActivationPlanResponse.from(planRepository.save(plan));
     }
 
-    public VietQrActivationPlanResponse submitForApproval(UUID planId, SubmitActivationPlanCommand cmd) {
+    public VietQrActivationPlanResponse submitForApproval(UUID planId, String actorId) {
         VietQrActivationPlan plan = findPlanOrThrow(planId);
-        plan.submitForApproval(cmd.submittedByAdminUserId());
+        plan.submitForApproval();
         return VietQrActivationPlanResponse.from(planRepository.save(plan));
     }
 
-    public VietQrActivationPlanResponse approvePlan(UUID planId, ApproveActivationPlanCommand cmd) {
+    public VietQrActivationPlanResponse approvePlan(UUID planId, String approverActorId) {
         VietQrActivationPlan plan = findPlanOrThrow(planId);
-        plan.approve(cmd.approvedByAdminUserId());
+        plan.approve(approverActorId);
         return VietQrActivationPlanResponse.from(planRepository.save(plan));
     }
 
-    public VietQrActivationPlanResponse activatePlan(UUID planId, UUID operatorId) {
+    public VietQrActivationPlanResponse activatePlan(UUID planId, String operatorActorId) {
         VietQrActivationPlan plan = findPlanOrThrow(planId);
-        plan.activate(operatorId);
+        plan.activate(operatorActorId);
         return VietQrActivationPlanResponse.from(planRepository.save(plan));
     }
 
-    public VietQrActivationPlanResponse rejectPlan(UUID planId, RejectActivationPlanCommand cmd) {
+    public VietQrActivationPlanResponse rejectPlan(UUID planId, RejectActivationPlanCommand cmd, String reviewerActorId) {
         VietQrActivationPlan plan = findPlanOrThrow(planId);
-        plan.reject(cmd.reviewedByAdminUserId(), cmd.reason());
+        plan.reject(reviewerActorId, cmd.reason());
         return VietQrActivationPlanResponse.from(planRepository.save(plan));
     }
 
-    public VietQrActivationPlanResponse suspendPlan(UUID planId, UUID operatorId, String reason) {
+    public VietQrActivationPlanResponse suspendPlan(UUID planId, SuspendActivationPlanCommand cmd, String operatorActorId) {
         VietQrActivationPlan plan = findPlanOrThrow(planId);
-        plan.suspend(operatorId, reason);
+        String reason = cmd != null ? cmd.reason() : null;
+        plan.suspend(operatorActorId, reason);
         return VietQrActivationPlanResponse.from(planRepository.save(plan));
     }
 

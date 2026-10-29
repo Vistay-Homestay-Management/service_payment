@@ -16,8 +16,8 @@ public interface VietQrActivationPlanRepository extends JpaRepository<VietQrActi
 
     List<VietQrActivationPlan> findByStatus(VietQrPlanStatus status);
 
-    Optional<VietQrActivationPlan> findFirstByStatusOrderByUpdatedAtDesc(VietQrPlanStatus status);
-
     List<VietQrActivationPlan> findByMerchantCode(String merchantCode);
+
+    Optional<VietQrActivationPlan> findFirstByStatusOrderByUpdatedAtDesc(VietQrPlanStatus status);
 }
 

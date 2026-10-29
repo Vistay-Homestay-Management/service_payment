@@ -2,6 +2,7 @@ package com.vistay.payment.domain;
 
 import jakarta.persistence.*;
 import java.time.Instant;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -60,14 +61,14 @@ public class VietQrActivationPlan {
     @Column(name = "callback_secret_configured", nullable = false)
     private boolean callbackSecretConfigured = false;
 
-    @Column(name = "created_by_admin_user_id", nullable = false, updatable = false)
-    private UUID createdByAdminUserId;
+    @Column(name = "created_by_admin_user_id", nullable = false, updatable = false, length = 100)
+    private String createdByAdminUserId;
 
     @Column(name = "submitted_at")
     private Instant submittedAt;
 
-    @Column(name = "approved_by_admin_user_id")
-    private UUID approvedByAdminUserId;
+    @Column(name = "approved_by_admin_user_id", length = 100)
+    private String approvedByAdminUserId;
 
     @Column(name = "approved_at")
     private Instant approvedAt;
@@ -96,7 +97,7 @@ public class VietQrActivationPlan {
                                 String bankAccountNumber,
                                 String bankAccountName,
                                 PaymentActivationMode targetActivationMode,
-                                UUID createdByAdminUserId) {
+                                String createdByAdminUserId) {
         if (planCode == null || planCode.isBlank()) {
             throw new IllegalArgumentException("Plan code cannot be blank");
         }
@@ -121,8 +122,8 @@ public class VietQrActivationPlan {
         if (targetActivationMode == null) {
             throw new IllegalArgumentException("Target activation mode cannot be null");
         }
-        if (createdByAdminUserId == null) {
-            throw new IllegalArgumentException("Creator admin user ID cannot be null");
+        if (createdByAdminUserId == null || createdByAdminUserId.isBlank()) {
+            throw new IllegalArgumentException("Creator actor identity cannot be null or blank");
         }
 
         this.planCode = planCode.trim();
@@ -133,7 +134,7 @@ public class VietQrActivationPlan {
         this.bankAccountNumber = bankAccountNumber.trim();
         this.bankAccountName = bankAccountName.trim();
         this.targetActivationMode = targetActivationMode;
-        this.createdByAdminUserId = createdByAdminUserId;
+        this.createdByAdminUserId = createdByAdminUserId.trim();
         this.status = VietQrPlanStatus.DRAFT;
         this.createdAt = Instant.now();
         this.updatedAt = Instant.now();
@@ -146,7 +147,7 @@ public class VietQrActivationPlan {
         this.uatVerified = true;
         this.uatTestReference = testReference.trim();
         this.uatVerifiedAt = Instant.now();
-        this.uatNotes = notes;
+        this.uatNotes = notes != null ? notes.trim() : null;
         this.updatedAt = Instant.now();
     }
 
@@ -154,12 +155,16 @@ public class VietQrActivationPlan {
         if (callbackUrl == null || callbackUrl.isBlank()) {
             throw new IllegalArgumentException("Callback URL cannot be blank");
         }
-        this.callbackUrl = callbackUrl.trim();
+        String trimmed = callbackUrl.trim();
+        if (!trimmed.toLowerCase(Locale.ROOT).startsWith("https://")) {
+            throw new IllegalArgumentException("Callback URL must use public HTTPS protocol: " + trimmed);
+        }
+        this.callbackUrl = trimmed;
         this.callbackSecretConfigured = secretConfigured;
         this.updatedAt = Instant.now();
     }
 
-    public void submitForApproval(UUID submitterId) {
+    public void submitForApproval() {
         if (status != VietQrPlanStatus.DRAFT && status != VietQrPlanStatus.REJECTED) {
             throw new IllegalStateException("Only DRAFT or REJECTED plans can be submitted. Current: " + status);
         }
@@ -169,14 +174,15 @@ public class VietQrActivationPlan {
         this.updatedAt = Instant.now();
     }
 
-    public void approve(UUID checkerAdminId) {
+    public void approve(String checkerActorId) {
         if (status != VietQrPlanStatus.PENDING_APPROVAL) {
             throw new IllegalStateException("Only PENDING_APPROVAL plans can be approved. Current: " + status);
         }
-        if (checkerAdminId == null) {
-            throw new IllegalArgumentException("Approver ID cannot be null");
+        if (checkerActorId == null || checkerActorId.isBlank()) {
+            throw new IllegalArgumentException("Approver ID cannot be null or blank");
         }
-        if (Objects.equals(this.createdByAdminUserId, checkerAdminId)) {
+        String trimmedApprover = checkerActorId.trim();
+        if (Objects.equals(this.createdByAdminUserId, trimmedApprover)) {
             throw new IllegalStateException("Maker-Checker violation: Creator cannot approve their own VietQR activation plan");
         }
 
@@ -187,30 +193,39 @@ public class VietQrActivationPlan {
             if (!this.callbackSecretConfigured) {
                 throw new IllegalStateException("Cannot approve CALLBACK_ENABLED plan: Callback webhook secret is not configured");
             }
+            if (this.callbackUrl == null || !this.callbackUrl.toLowerCase(Locale.ROOT).startsWith("https://")) {
+                throw new IllegalStateException("Cannot approve CALLBACK_ENABLED plan: Callback URL must be a valid HTTPS endpoint");
+            }
         }
 
         this.status = VietQrPlanStatus.APPROVED;
-        this.approvedByAdminUserId = checkerAdminId;
+        this.approvedByAdminUserId = trimmedApprover;
         this.approvedAt = Instant.now();
         this.updatedAt = Instant.now();
     }
 
-    public void activate(UUID operatorId) {
+    public void activate(String operatorActorId) {
         if (status != VietQrPlanStatus.APPROVED) {
             throw new IllegalStateException("Only APPROVED plans can be activated. Current: " + status);
+        }
+        if (this.targetActivationMode == PaymentActivationMode.CALLBACK_ENABLED) {
+            if (!this.uatVerified || !this.callbackSecretConfigured || this.callbackUrl == null || !this.callbackUrl.toLowerCase(Locale.ROOT).startsWith("https://")) {
+                throw new IllegalStateException("Cannot activate CALLBACK_ENABLED plan: prerequisite UAT and HTTPS gates not met");
+            }
         }
         this.status = VietQrPlanStatus.ACTIVE;
         this.updatedAt = Instant.now();
     }
 
-    public void reject(UUID checkerAdminId, String reason) {
+    public void reject(String checkerActorId, String reason) {
         if (status != VietQrPlanStatus.PENDING_APPROVAL) {
             throw new IllegalStateException("Only PENDING_APPROVAL plans can be rejected. Current: " + status);
         }
-        if (checkerAdminId == null) {
-            throw new IllegalArgumentException("Reviewer ID cannot be null");
+        if (checkerActorId == null || checkerActorId.isBlank()) {
+            throw new IllegalArgumentException("Reviewer ID cannot be null or blank");
         }
-        if (Objects.equals(this.createdByAdminUserId, checkerAdminId)) {
+        String trimmedReviewer = checkerActorId.trim();
+        if (Objects.equals(this.createdByAdminUserId, trimmedReviewer)) {
             throw new IllegalStateException("Maker-Checker violation: Creator cannot reject their own VietQR activation plan");
         }
         if (reason == null || reason.isBlank()) {
@@ -218,17 +233,17 @@ public class VietQrActivationPlan {
         }
 
         this.status = VietQrPlanStatus.REJECTED;
-        this.approvedByAdminUserId = checkerAdminId;
+        this.approvedByAdminUserId = trimmedReviewer;
         this.rejectionReason = reason.trim();
         this.updatedAt = Instant.now();
     }
 
-    public void suspend(UUID operatorId, String reason) {
+    public void suspend(String operatorActorId, String reason) {
         if (status != VietQrPlanStatus.ACTIVE) {
             throw new IllegalStateException("Only ACTIVE plans can be suspended. Current: " + status);
         }
         this.status = VietQrPlanStatus.SUSPENDED;
-        this.rejectionReason = reason;
+        this.rejectionReason = reason != null ? reason.trim() : null;
         this.updatedAt = Instant.now();
     }
 
@@ -297,7 +312,7 @@ public class VietQrActivationPlan {
         return callbackSecretConfigured;
     }
 
-    public UUID getCreatedByAdminUserId() {
+    public String getCreatedByAdminUserId() {
         return createdByAdminUserId;
     }
 
@@ -305,7 +320,7 @@ public class VietQrActivationPlan {
         return submittedAt;
     }
 
-    public UUID getApprovedByAdminUserId() {
+    public String getApprovedByAdminUserId() {
         return approvedByAdminUserId;
     }
 

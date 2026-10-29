@@ -17,9 +17,9 @@ CREATE TABLE vietqr_activation_plans (
     uat_notes text,
     callback_url varchar(500),
     callback_secret_configured boolean NOT NULL DEFAULT false,
-    created_by_admin_user_id uuid NOT NULL,
+    created_by_admin_user_id varchar(100) NOT NULL,
     submitted_at timestamptz,
-    approved_by_admin_user_id uuid,
+    approved_by_admin_user_id varchar(100),
     approved_at timestamptz,
     rejection_reason varchar(1000),
     version bigint NOT NULL DEFAULT 0,
@@ -28,7 +28,7 @@ CREATE TABLE vietqr_activation_plans (
     CONSTRAINT ck_activation_plan_status CHECK (status IN ('DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'ACTIVE', 'REJECTED', 'SUSPENDED')),
     CONSTRAINT ck_activation_target_mode CHECK (target_activation_mode IN ('DISABLED', 'GENERATE_ONLY', 'CALLBACK_ENABLED')),
     CONSTRAINT ck_activation_maker_checker CHECK (approved_by_admin_user_id IS NULL OR approved_by_admin_user_id <> created_by_admin_user_id),
-    CONSTRAINT ck_callback_uat_ready CHECK (target_activation_mode <> 'CALLBACK_ENABLED' OR status NOT IN ('APPROVED', 'ACTIVE') OR (uat_verified = true AND callback_secret_configured = true))
+    CONSTRAINT ck_callback_uat_ready CHECK (target_activation_mode <> 'CALLBACK_ENABLED' OR status NOT IN ('APPROVED', 'ACTIVE') OR (uat_verified = true AND callback_secret_configured = true AND callback_url LIKE 'https://%'))
 );
 
 CREATE INDEX ix_activation_plan_merchant ON vietqr_activation_plans(merchant_code, status);
