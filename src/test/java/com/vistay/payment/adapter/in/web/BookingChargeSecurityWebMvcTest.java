@@ -4,6 +4,7 @@ import com.vistay.payment.application.BookingBranchResolver;
 import com.vistay.payment.application.BookingChargeAuthorizationService;
 import com.vistay.payment.application.BookingChargeResponse;
 import com.vistay.payment.application.BookingChargeService;
+import com.vistay.payment.application.PaymentAuthorizationClient;
 import com.vistay.payment.config.SecurityConfig;
 import com.vistay.payment.domain.ChargeStatus;
 import com.vistay.payment.domain.ChargeType;
@@ -73,6 +74,9 @@ class BookingChargeSecurityWebMvcTest {
     private BookingBranchResolver bookingBranchResolver;
 
     @MockitoBean
+    private PaymentAuthorizationClient paymentAuthorizationClient;
+
+    @MockitoBean
     private JwtDecoder jwtDecoder;
 
     private final UUID chargeId = UUID.randomUUID();
@@ -84,10 +88,28 @@ class BookingChargeSecurityWebMvcTest {
 
     @BeforeEach
     void setUp() {
+        var emptySnapshot = new PaymentAuthorizationClient.Snapshot(
+                true, staffUserId, 1L, Map.of(), Map.of());
+        when(paymentAuthorizationClient.get(any(), any())).thenReturn(emptySnapshot);
+        when(paymentAuthorizationClient.require(any(), any(), any()))
+                .thenThrow(new PaymentAuthorizationClient.AuthorizationException(
+                        "FORBIDDEN_PERMISSION", "Missing permission"));
         mockMvc = MockMvcBuilders
                 .webAppContextSetup(webApplicationContext)
                 .apply(springSecurity())
                 .build();
+    }
+
+    private void allowAdmin(String permission, PaymentAuthorizationClient.Scope scope, UUID branchId) {
+        var partitions = branchId == null ? Map.<String, java.util.Set<PaymentAuthorizationClient.PartitionBinding>>of()
+                : Map.of(permission, java.util.Set.of(
+                        new PaymentAuthorizationClient.PartitionBinding("BRANCH", branchId)));
+        var snapshot = new PaymentAuthorizationClient.Snapshot(
+                true, staffUserId, 1L, Map.of(permission, java.util.Set.of(scope)), partitions);
+        when(paymentAuthorizationClient.get(PaymentAuthorizationClient.AccountKind.ADMIN, staffUserId))
+                .thenReturn(snapshot);
+        org.mockito.Mockito.doReturn(snapshot).when(paymentAuthorizationClient).require(
+                PaymentAuthorizationClient.AccountKind.ADMIN, staffUserId, permission);
     }
 
     private BookingChargeResponse sampleResponse(UUID branchId) {
@@ -128,7 +150,10 @@ class BookingChargeSecurityWebMvcTest {
         """.formatted(financeRequestId, bookingId, branchA, customerId, Instant.now().plusSeconds(3600));
 
         mockMvc.perform(post("/api/v1/payment/booking-charges")
-                        .with(jwt().authorities(new SimpleGrantedAuthority("SCOPE_payment:read")))
+                        .with(jwt()
+                                .jwt(builder -> builder.subject(staffUserId.toString())
+                                        .claim("account_type", "ADMIN"))
+                                .authorities(new SimpleGrantedAuthority("SCOPE_payment:read")))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isForbidden());
@@ -179,6 +204,7 @@ class BookingChargeSecurityWebMvcTest {
     @Test
     @DisplayName("F-01: Staff with BRANCH scope attempting createCharge when booking branch is unresolvable fails-closed with 403")
     void postCreateCharge_branchScope_unresolvableBookingBranch_returns403() throws Exception {
+        allowAdmin("payment:write", PaymentAuthorizationClient.Scope.PARTITION, branchA);
         when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.empty());
 
         String json = """
@@ -200,27 +226,26 @@ class BookingChargeSecurityWebMvcTest {
         mockMvc.perform(post("/api/v1/payment/booking-charges")
                         .with(jwt()
                                 .jwt(builder -> builder
-                                        .subject("STAFF:" + staffUserId)
-                                        .claim("grants", List.of(Map.of("p", "payment:write", "s", "BRANCH")))
-                                        .claim("bld", List.of(branchA.toString())))
+                                        .subject(staffUserId.toString())
+                                        .claim("account_type", "ADMIN"))
                                 .authorities(new SimpleGrantedAuthority("SCOPE_payment:write"),
                                              new SimpleGrantedAuthority("ROLE_RECEPTIONIST")))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isBadRequest());
     }
 
     @Test
     @DisplayName("F-02: Staff with BRANCH scope accessing charge with NULL branch fails-closed with 403 Forbidden")
     void getChargeById_branchScope_nullBranchOnCharge_returns403() throws Exception {
+        allowAdmin("payment:read", PaymentAuthorizationClient.Scope.PARTITION, branchA);
         when(bookingChargeService.getChargeById(chargeId)).thenReturn(sampleResponse(null));
 
         mockMvc.perform(get("/api/v1/payment/booking-charges/{id}", chargeId)
                         .with(jwt()
                                 .jwt(builder -> builder
-                                        .subject("STAFF:" + staffUserId)
-                                        .claim("grants", List.of(Map.of("p", "payment:read", "s", "BRANCH")))
-                                        .claim("bld", List.of(branchA.toString())))
+                                        .subject(staffUserId.toString())
+                                        .claim("account_type", "ADMIN"))
                                 .authorities(new SimpleGrantedAuthority("SCOPE_payment:read"),
                                              new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))))
                 .andExpect(status().isForbidden());
@@ -229,14 +254,14 @@ class BookingChargeSecurityWebMvcTest {
     @Test
     @DisplayName("Spring Security: Staff with valid BRANCH scope and matching branch succeeds 200 OK")
     void getChargeById_branchScope_matchingBranch_returns200() throws Exception {
+        allowAdmin("payment:read", PaymentAuthorizationClient.Scope.PARTITION, branchA);
         when(bookingChargeService.getChargeById(chargeId)).thenReturn(sampleResponse(branchA));
 
         mockMvc.perform(get("/api/v1/payment/booking-charges/{id}", chargeId)
                         .with(jwt()
                                 .jwt(builder -> builder
-                                        .subject("STAFF:" + staffUserId)
-                                        .claim("grants", List.of(Map.of("p", "payment:read", "s", "BRANCH")))
-                                        .claim("bld", List.of(branchA.toString())))
+                                        .subject(staffUserId.toString())
+                                        .claim("account_type", "ADMIN"))
                                 .authorities(new SimpleGrantedAuthority("SCOPE_payment:read"),
                                              new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))))
                 .andExpect(status().isOk())

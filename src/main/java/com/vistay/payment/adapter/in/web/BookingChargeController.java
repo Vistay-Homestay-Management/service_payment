@@ -33,16 +33,10 @@ public class BookingChargeController {
     }
 
     @PostMapping
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:write', 'ROLE_ADMIN', 'ROLE_RECEPTIONIST', 'ROLE_FINANCE')")
     public ResponseEntity<BookingChargeResponse> createCharge(
             @Valid @RequestBody CreateBookingChargeCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.extractActorId(jwt);
-
-        if (authorizationService.hasDataScope(jwt, "payment:write", "BRANCH") && command.branchId() == null) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "Access denied: Staff with BRANCH scope cannot modify charges without an assigned branch");
-        }
+        UUID actorId = authorizationService.requireActorId(jwt, "payment:write");
 
         UUID resolvedBranchId = null;
         if (bookingBranchResolver != null) {
@@ -54,9 +48,6 @@ public class BookingChargeController {
                             "Requested branch ID (" + command.branchId()
                                     + ") conflicts with authoritative booking branch (" + resolvedBranchId + ")");
                 }
-            } else if (authorizationService.hasDataScope(jwt, "payment:write", "BRANCH")) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Booking branch cannot be authoritatively resolved, BRANCH scope rejected");
             } else {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "Authoritative booking branch cannot be resolved for booking: " + command.bookingId());
@@ -82,51 +73,48 @@ public class BookingChargeController {
     }
 
     @PostMapping("/{id}/waive")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:write', 'ROLE_ADMIN', 'ROLE_FINANCE')")
     public ResponseEntity<BookingChargeResponse> waiveCharge(
             @PathVariable UUID id,
             @Valid @RequestBody WaiveBookingChargeCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.extractActorId(jwt);
+        UUID actorId = authorizationService.requireActorId(jwt, "payment:write");
         BookingChargeResponse charge = bookingChargeService.getChargeById(id);
         authorizationService.assertWriteDataScope(charge.branchId(), charge.bookingId(), charge.createdByAdminUserId(), actorId, jwt);
         return ResponseEntity.ok(bookingChargeService.waiveCharge(id, command, actorId));
     }
 
     @PostMapping("/{id}/cancel")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:write', 'ROLE_ADMIN', 'ROLE_RECEPTIONIST', 'ROLE_FINANCE')")
     public ResponseEntity<BookingChargeResponse> cancelCharge(
             @PathVariable UUID id,
             @Valid @RequestBody CancelBookingChargeCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.extractActorId(jwt);
+        UUID actorId = authorizationService.requireActorId(jwt, "payment:write");
         BookingChargeResponse charge = bookingChargeService.getChargeById(id);
         authorizationService.assertWriteDataScope(charge.branchId(), charge.bookingId(), charge.createdByAdminUserId(), actorId, jwt);
         return ResponseEntity.ok(bookingChargeService.cancelCharge(id, command, actorId));
     }
 
     @GetMapping("/{id}")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:read', 'ROLE_ADMIN', 'ROLE_RECEPTIONIST', 'ROLE_FINANCE', 'ROLE_USER')")
     public ResponseEntity<BookingChargeResponse> getChargeById(
             @PathVariable UUID id,
             @AuthenticationPrincipal Jwt jwt) {
+        authorizationService.requirePermission(jwt, "payment:read");
         BookingChargeResponse response = bookingChargeService.getChargeById(id);
         authorizationService.assertReadDataScope(response, jwt);
         return ResponseEntity.ok(response);
     }
 
     @GetMapping("/code/{chargeCode}")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:read', 'ROLE_ADMIN', 'ROLE_RECEPTIONIST', 'ROLE_FINANCE', 'ROLE_USER')")
     public ResponseEntity<BookingChargeResponse> getChargeByCode(
             @PathVariable String chargeCode,
             @AuthenticationPrincipal Jwt jwt) {
+        authorizationService.requirePermission(jwt, "payment:read");
         BookingChargeResponse response = bookingChargeService.getChargeByCode(chargeCode);
         authorizationService.assertReadDataScope(response, jwt);
         return ResponseEntity.ok(response);
     }
 
     @GetMapping("/booking/{bookingId}")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:read', 'ROLE_ADMIN', 'ROLE_RECEPTIONIST', 'ROLE_FINANCE', 'ROLE_USER')")
     public ResponseEntity<List<BookingChargeResponse>> getChargesByBooking(
             @PathVariable UUID bookingId,
             @AuthenticationPrincipal Jwt jwt) {
@@ -139,7 +127,6 @@ public class BookingChargeController {
     }
 
     @GetMapping("/booking/{bookingId}/open-balance")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:read', 'ROLE_ADMIN', 'ROLE_RECEPTIONIST', 'ROLE_FINANCE', 'ROLE_USER')")
     public ResponseEntity<BookingOpenBalanceSummaryResponse> getBookingOpenBalance(
             @PathVariable UUID bookingId,
             @AuthenticationPrincipal Jwt jwt) {

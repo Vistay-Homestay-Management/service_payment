@@ -20,17 +20,20 @@ import static com.vistay.payment.adapter.in.web.VietQrActivationSecurity.*;
 public class VietQrActivationController {
 
     private final VietQrActivationPlanService activationPlanService;
+    private final BookingChargeAuthorizationService authorization;
 
-    public VietQrActivationController(VietQrActivationPlanService activationPlanService) {
+    public VietQrActivationController(
+            VietQrActivationPlanService activationPlanService,
+            BookingChargeAuthorizationService authorization) {
         this.activationPlanService = activationPlanService;
+        this.authorization = authorization;
     }
 
     @PostMapping
     public ResponseEntity<VietQrActivationPlanResponse> createPlan(
             @Valid @RequestBody CreateActivationPlanCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_CREATE);
-        String actorId = extractActorIdentity(jwt);
+        String actorId = authorization.requireAll(jwt, PERM_PLAN_CREATE);
         VietQrActivationPlanResponse response = activationPlanService.createPlan(command, actorId);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
@@ -40,8 +43,7 @@ public class VietQrActivationController {
             @PathVariable UUID id,
             @Valid @RequestBody RecordUatEvidenceCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_UAT);
-        String actorId = extractActorIdentity(jwt);
+        String actorId = authorization.requireAll(jwt, PERM_PLAN_UAT);
         return ResponseEntity.ok(activationPlanService.recordUatEvidence(id, command, actorId));
     }
 
@@ -50,8 +52,7 @@ public class VietQrActivationController {
             @PathVariable UUID id,
             @Valid @RequestBody ConfigureCallbackCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_CALLBACK);
-        String actorId = extractActorIdentity(jwt);
+        String actorId = authorization.requireAll(jwt, PERM_PLAN_CALLBACK);
         return ResponseEntity.ok(activationPlanService.configureCallback(id, command, actorId));
     }
 
@@ -59,8 +60,7 @@ public class VietQrActivationController {
     public ResponseEntity<VietQrActivationPlanResponse> submitForApproval(
             @PathVariable UUID id,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_SUBMIT);
-        String actorId = extractActorIdentity(jwt);
+        String actorId = authorization.requireAll(jwt, PERM_PLAN_SUBMIT);
         return ResponseEntity.ok(activationPlanService.submitForApproval(id, actorId));
     }
 
@@ -68,8 +68,7 @@ public class VietQrActivationController {
     public ResponseEntity<VietQrActivationPlanResponse> approvePlan(
             @PathVariable UUID id,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_APPROVE);
-        String actorId = extractActorIdentity(jwt);
+        String actorId = authorization.requireAll(jwt, PERM_PLAN_APPROVE);
         try {
             return ResponseEntity.ok(activationPlanService.approvePlan(id, actorId));
         } catch (IllegalStateException conflict) {
@@ -81,8 +80,7 @@ public class VietQrActivationController {
     public ResponseEntity<VietQrActivationPlanResponse> activatePlan(
             @PathVariable UUID id,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_ACTIVATE);
-        String actorId = extractActorIdentity(jwt);
+        String actorId = authorization.requireAll(jwt, PERM_PLAN_ACTIVATE);
         try {
             return ResponseEntity.ok(activationPlanService.activatePlan(id, actorId));
         } catch (IllegalStateException conflict) {
@@ -95,8 +93,7 @@ public class VietQrActivationController {
             @PathVariable UUID id,
             @Valid @RequestBody RejectActivationPlanCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_APPROVE);
-        String actorId = extractActorIdentity(jwt);
+        String actorId = authorization.requireAll(jwt, PERM_PLAN_APPROVE);
         try {
             return ResponseEntity.ok(activationPlanService.rejectPlan(id, command, actorId));
         } catch (IllegalStateException conflict) {
@@ -109,8 +106,7 @@ public class VietQrActivationController {
             @PathVariable UUID id,
             @RequestBody(required = false) SuspendActivationPlanCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_SUSPEND);
-        String actorId = extractActorIdentity(jwt);
+        String actorId = authorization.requireAll(jwt, PERM_PLAN_SUSPEND);
         try {
             return ResponseEntity.ok(activationPlanService.suspendPlan(id, command, actorId));
         } catch (IllegalStateException conflict) {
@@ -122,7 +118,7 @@ public class VietQrActivationController {
     public ResponseEntity<VietQrActivationPlanResponse> getPlanById(
             @PathVariable UUID id,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_READ);
+        authorization.requireAll(jwt, PERM_PLAN_READ);
         return ResponseEntity.ok(activationPlanService.getPlanById(id));
     }
 
@@ -130,14 +126,14 @@ public class VietQrActivationController {
     public ResponseEntity<VietQrActivationPlanResponse> getPlanByCode(
             @PathVariable String planCode,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_READ);
+        authorization.requireAll(jwt, PERM_PLAN_READ);
         return ResponseEntity.ok(activationPlanService.getPlanByCode(planCode));
     }
 
     @GetMapping("/active")
     public ResponseEntity<VietQrActivationPlanResponse> getActivePlan(
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_READ);
+        authorization.requireAll(jwt, PERM_PLAN_READ);
         return activationPlanService.getActivePlan()
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
@@ -147,7 +143,7 @@ public class VietQrActivationController {
     public ResponseEntity<List<VietQrActivationPlanResponse>> listPlans(
             @RequestParam(required = false) VietQrPlanStatus status,
             @AuthenticationPrincipal Jwt jwt) {
-        assertAuthenticatedAndHasGrant(jwt, PERM_PLAN_READ);
+        authorization.requireAll(jwt, PERM_PLAN_READ);
         return ResponseEntity.ok(activationPlanService.listPlans(status));
     }
 }

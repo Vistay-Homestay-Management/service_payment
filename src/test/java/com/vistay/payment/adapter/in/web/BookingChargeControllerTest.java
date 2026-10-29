@@ -22,10 +22,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -42,6 +39,9 @@ class BookingChargeControllerTest {
     @Mock
     private BookingBranchResolver bookingBranchResolver;
 
+    @Mock
+    private PaymentAuthorizationClient paymentAuthorizationClient;
+
     private BookingChargeAuthorizationService authorizationService;
     private BookingChargeController controller;
 
@@ -56,7 +56,8 @@ class BookingChargeControllerTest {
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
-        authorizationService = new BookingChargeAuthorizationService(bookingBranchResolver);
+        authorizationService = new BookingChargeAuthorizationService(
+                bookingBranchResolver, paymentAuthorizationClient);
         controller = new BookingChargeController(bookingChargeService, bookingBranchResolver, authorizationService);
     }
 
@@ -66,9 +67,54 @@ class BookingChargeControllerTest {
     }
 
     private Jwt createJwt(String subject, Map<String, Object> extraClaims) {
+        String[] subjectParts = subject.split(":", 2);
+        PaymentAuthorizationClient.AccountKind accountType = subjectParts.length == 2
+                ? PaymentAuthorizationClient.AccountKind.valueOf(subjectParts[0].replace("STAFF", "ADMIN"))
+                : PaymentAuthorizationClient.AccountKind.ADMIN;
+        UUID accountId = UUID.fromString(subjectParts.length == 2 ? subjectParts[1] : subject);
+        Map<String, Set<PaymentAuthorizationClient.Scope>> grants = new LinkedHashMap<>();
+        Map<String, Set<PaymentAuthorizationClient.PartitionBinding>> partitions = new LinkedHashMap<>();
+        if (accountType == PaymentAuthorizationClient.AccountKind.CUSTOMER) {
+            grants.put("payment:read", Set.of(PaymentAuthorizationClient.Scope.OWN));
+        }
+        Object rawGrants = extraClaims == null ? null : extraClaims.get("grants");
+        if (rawGrants instanceof List<?> list) {
+            for (Object value : list) {
+                if (!(value instanceof Map<?, ?> grant)) continue;
+                String permission = Objects.toString(
+                        grant.containsKey("p") ? grant.get("p") : grant.get("permission"), "");
+                String rawScope = Objects.toString(
+                        grant.containsKey("s") ? grant.get("s") : grant.get("scope"), "");
+                if (permission.isBlank() || rawScope.isBlank()) continue;
+                if ("BRANCH".equals(rawScope)) {
+                    grants.put(permission, Set.of(PaymentAuthorizationClient.Scope.PARTITION));
+                    List<String> branches = extraClaims.get("bld") instanceof List<?> values
+                            ? values.stream().map(Object::toString).toList() : List.of();
+                    partitions.put(permission, branches.stream()
+                            .map(branch -> new PaymentAuthorizationClient.PartitionBinding(
+                                    "BRANCH", UUID.fromString(branch)))
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+                } else {
+                    grants.put(permission, Set.of(PaymentAuthorizationClient.Scope.valueOf(rawScope)));
+                }
+            }
+        }
+        PaymentAuthorizationClient.Snapshot snapshot = new PaymentAuthorizationClient.Snapshot(
+                true, accountId, 1L, Map.copyOf(grants), Map.copyOf(partitions));
+        org.mockito.Mockito.lenient().when(paymentAuthorizationClient.get(accountType, accountId)).thenReturn(snapshot);
+        org.mockito.Mockito.lenient().when(paymentAuthorizationClient.require(eq(accountType), eq(accountId), any(String.class)))
+                .thenAnswer(invocation -> {
+                    String permission = invocation.getArgument(2);
+                    if (snapshot.scopes(permission).isEmpty()) {
+                        throw new PaymentAuthorizationClient.AuthorizationException(
+                                "FORBIDDEN_PERMISSION", "Missing permission " + permission);
+                    }
+                    return snapshot;
+                });
         var builder = Jwt.withTokenValue("mock-token")
                 .header("alg", "none")
-                .subject(subject)
+                .subject(accountId.toString())
+                .claim("account_type", accountType.name())
                 .claim("aud", List.of("vistay-services"));
         if (extraClaims != null) {
             extraClaims.forEach(builder::claim);
@@ -140,7 +186,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Cannot access booking charges belonging to another customer");
+                    assertThat(rse.getReason()).contains("Customer cannot access charges belonging to another customer");
                 });
     }
 
@@ -183,7 +229,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff with BRANCH scope cannot access charges without an assigned branch");
+                    assertThat(rse.getReason()).contains("outside the granted scope");
                 });
     }
 
@@ -206,13 +252,14 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff is not authorized for branch");
+                    assertThat(rse.getReason()).contains("outside the granted scope");
                 });
     }
 
     @Test
     @DisplayName("P0-02 Staff Data Scope: Nhân viên có OWN scope chỉ được xem charge do mình tạo -> 200 OK")
     void getChargeById_StaffOwnScope_SameCreator_Returns200() {
+        when(bookingBranchResolver.isBookingOwnedBy(bookingId, staffUserId)).thenReturn(true);
         Map<String, Object> claims = Map.of(
                 "grants", List.of(Map.of("p", "payment:read", "s", "OWN"))
         );
@@ -247,7 +294,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff with OWN scope cannot access charges created by another actor");
+                    assertThat(rse.getReason()).contains("outside the granted scope");
                 });
     }
 
@@ -262,14 +309,12 @@ class BookingChargeControllerTest {
         context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))));
         SecurityContextHolder.setContext(context);
 
-        when(bookingChargeService.getChargeById(chargeId)).thenReturn(createSampleChargeResponse(customerId, branchA, staffUserId));
-
         assertThatThrownBy(() -> controller.getChargeById(chargeId, jwt))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Missing valid data scope for payment:read");
+                    assertThat(rse.getReason()).contains("Missing permission payment:read");
                 });
     }
 
@@ -312,7 +357,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff with ASSIGNED scope is not assigned to booking");
+                    assertThat(rse.getReason()).contains("outside the granted scope");
                 });
     }
 
@@ -340,8 +385,6 @@ class BookingChargeControllerTest {
         context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))));
         SecurityContextHolder.setContext(context);
 
-        when(bookingChargeService.getChargeById(chargeId)).thenReturn(createSampleChargeResponse(customerId, branchB, staffUserId));
-
         assertThatThrownBy(() -> controller.getChargeById(chargeId, jwt))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN));
@@ -350,8 +393,6 @@ class BookingChargeControllerTest {
     @Test
     @DisplayName("P0 Write Scope: Token có quyền write nhưng thiếu Data Scope (không ALL/BRANCH/OWN/ASSIGNED) -> 403 Forbidden")
     void createCharge_MissingDataScope_Throws403() {
-        when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(branchA));
-
         Jwt jwt = createJwt("ADMIN:" + staffUserId, Map.of("scope", "payment:write"));
         SecurityContext context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("SCOPE_payment:write"))));
@@ -368,7 +409,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Missing valid write data scope");
+                    assertThat(rse.getReason()).contains("Missing permission payment:write");
                 });
     }
 
@@ -394,8 +435,8 @@ class BookingChargeControllerTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
-                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff with BRANCH scope cannot modify charges without an assigned branch");
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(rse.getReason()).contains("Authoritative booking branch cannot be resolved");
                 });
     }
 
@@ -424,7 +465,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff is not authorized to modify charges for branch");
+                    assertThat(rse.getReason()).contains("outside the granted scope");
                 });
     }
 
@@ -509,7 +550,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff with ASSIGNED scope is not assigned to booking");
+                    assertThat(rse.getReason()).contains("outside the granted scope");
                 });
     }
 
@@ -582,7 +623,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff with OWN scope cannot modify charges created by another actor");
+                    assertThat(rse.getReason()).contains("outside the granted scope");
                 });
     }
 
@@ -608,7 +649,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff is not authorized for branch");
+                    assertThat(rse.getReason()).contains("outside the granted scope");
                 });
     }
 
@@ -634,7 +675,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Cannot access booking charges belonging to another customer");
+                    assertThat(rse.getReason()).contains("Customer cannot access charges belonging to another customer");
                 });
     }
 
@@ -663,7 +704,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff with OWN scope cannot create charges for a booking owned by another actor");
+                    assertThat(rse.getReason()).contains("outside the granted scope");
                 });
     }
 
@@ -753,7 +794,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Staff with OWN scope is not the owner of booking");
+                    assertThat(rse.getReason()).contains("outside the granted scope");
                 });
     }
 }

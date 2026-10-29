@@ -61,29 +61,6 @@ public class SecurityConfig {
             if (singleRole != null && !singleRole.isBlank()) {
                 authorities.add(new SimpleGrantedAuthority("ROLE_" + singleRole.toUpperCase()));
             }
-            List<String> permissions = jwt.getClaimAsStringList("permissions");
-            if (permissions != null) {
-                for (String perm : permissions) {
-                    authorities.add(new SimpleGrantedAuthority(perm));
-                    authorities.add(new SimpleGrantedAuthority("SCOPE_" + perm));
-                }
-            }
-            Object grantsObj = jwt.getClaims().get("grants");
-            if (grantsObj instanceof List<?> list) {
-                for (Object item : list) {
-                    if (item instanceof java.util.Map<?, ?> map) {
-                        Object pObj = map.get("p");
-                        if (pObj == null) {
-                            pObj = map.get("permission");
-                        }
-                        if (pObj != null) {
-                            String p = pObj.toString().trim();
-                            authorities.add(new SimpleGrantedAuthority(p));
-                            authorities.add(new SimpleGrantedAuthority("SCOPE_" + p));
-                        }
-                    }
-                }
-            }
             return authorities;
         });
         return converter;

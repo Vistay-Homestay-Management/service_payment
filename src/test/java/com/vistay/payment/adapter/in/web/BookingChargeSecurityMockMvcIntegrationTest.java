@@ -4,6 +4,7 @@ import com.vistay.payment.application.BookingBranchResolver;
 import com.vistay.payment.application.BookingChargeAuthorizationService;
 import com.vistay.payment.application.BookingChargeResponse;
 import com.vistay.payment.application.BookingChargeService;
+import com.vistay.payment.application.PaymentAuthorizationClient;
 import com.vistay.payment.domain.ChargeStatus;
 import com.vistay.payment.domain.ChargeType;
 import org.junit.jupiter.api.AfterEach;
@@ -33,10 +34,7 @@ import org.springframework.web.method.support.ModelAndViewContainer;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -55,6 +53,9 @@ class BookingChargeSecurityMockMvcIntegrationTest {
     @Mock
     private BookingBranchResolver bookingBranchResolver;
 
+    @Mock
+    private PaymentAuthorizationClient paymentAuthorizationClient;
+
     private BookingChargeAuthorizationService authorizationService;
     private BookingChargeController controller;
 
@@ -70,7 +71,8 @@ class BookingChargeSecurityMockMvcIntegrationTest {
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
-        authorizationService = new BookingChargeAuthorizationService(bookingBranchResolver);
+        authorizationService = new BookingChargeAuthorizationService(
+                bookingBranchResolver, paymentAuthorizationClient);
         controller = new BookingChargeController(bookingChargeService, bookingBranchResolver, authorizationService);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setCustomArgumentResolvers(new HandlerMethodArgumentResolver() {
@@ -104,9 +106,54 @@ class BookingChargeSecurityMockMvcIntegrationTest {
     }
 
     private Jwt createJwt(String subject, Map<String, Object> extraClaims) {
+        String[] subjectParts = subject.split(":", 2);
+        PaymentAuthorizationClient.AccountKind accountType = subjectParts.length == 2
+                ? PaymentAuthorizationClient.AccountKind.valueOf(subjectParts[0].replace("STAFF", "ADMIN"))
+                : PaymentAuthorizationClient.AccountKind.ADMIN;
+        UUID accountId = UUID.fromString(subjectParts.length == 2 ? subjectParts[1] : subject);
+        Map<String, Set<PaymentAuthorizationClient.Scope>> grants = new LinkedHashMap<>();
+        Map<String, Set<PaymentAuthorizationClient.PartitionBinding>> partitions = new LinkedHashMap<>();
+        if (accountType == PaymentAuthorizationClient.AccountKind.CUSTOMER) {
+            grants.put("payment:read", Set.of(PaymentAuthorizationClient.Scope.OWN));
+        }
+        Object rawGrants = extraClaims == null ? null : extraClaims.get("grants");
+        if (rawGrants instanceof List<?> list) {
+            for (Object value : list) {
+                if (!(value instanceof Map<?, ?> grant)) continue;
+                String permission = Objects.toString(grant.get("p"), "");
+                String rawScope = Objects.toString(grant.get("s"), "");
+                if (permission.isBlank() || rawScope.isBlank()) continue;
+                if ("BRANCH".equals(rawScope)) {
+                    grants.put(permission, Set.of(PaymentAuthorizationClient.Scope.PARTITION));
+                    List<String> branches = extraClaims.get("bld") instanceof List<?> values
+                            ? values.stream().map(Object::toString).toList() : List.of();
+                    partitions.put(permission, branches.stream()
+                            .map(branch -> new PaymentAuthorizationClient.PartitionBinding(
+                                    "BRANCH", UUID.fromString(branch)))
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+                } else {
+                    grants.put(permission, Set.of(PaymentAuthorizationClient.Scope.valueOf(rawScope)));
+                }
+            }
+        }
+        PaymentAuthorizationClient.Snapshot snapshot = new PaymentAuthorizationClient.Snapshot(
+                true, accountId, 1L, Map.copyOf(grants), Map.copyOf(partitions));
+        org.mockito.Mockito.lenient().when(paymentAuthorizationClient.get(accountType, accountId))
+                .thenReturn(snapshot);
+        org.mockito.Mockito.lenient().when(paymentAuthorizationClient.require(
+                        eq(accountType), eq(accountId), any(String.class)))
+                .thenAnswer(invocation -> {
+                    String permission = invocation.getArgument(2);
+                    if (snapshot.scopes(permission).isEmpty()) {
+                        throw new PaymentAuthorizationClient.AuthorizationException(
+                                "FORBIDDEN_PERMISSION", "Missing permission " + permission);
+                    }
+                    return snapshot;
+                });
         var builder = Jwt.withTokenValue("mock-jwt-token")
                 .header("alg", "none")
-                .subject(subject)
+                .subject(accountId.toString())
+                .claim("account_type", accountType.name())
                 .claim("aud", List.of("vistay-services"));
         if (extraClaims != null) {
             extraClaims.forEach(builder::claim);
@@ -144,8 +191,6 @@ class BookingChargeSecurityMockMvcIntegrationTest {
               "idempotencyKey": "IDEM-MVC-1"
             }
         """.formatted(financeRequestId, bookingId, branchA, customerId, Instant.now().plusSeconds(3600));
-
-        when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(branchA));
 
         mockMvc.perform(post("/api/v1/payment/booking-charges")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -218,7 +263,7 @@ class BookingChargeSecurityMockMvcIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json)
                         .with(withJwt(jwt, List.of(new SimpleGrantedAuthority("ROLE_RECEPTIONIST")))))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isBadRequest());
     }
 
     @Test

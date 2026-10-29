@@ -13,6 +13,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.core.MethodParameter;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
@@ -27,6 +28,7 @@ import org.springframework.web.bind.support.WebDataBinderFactory;
 import org.springframework.web.context.request.NativeWebRequest;
 import org.springframework.web.method.support.HandlerMethodArgumentResolver;
 import org.springframework.web.method.support.ModelAndViewContainer;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.List;
@@ -46,6 +48,9 @@ class VietQrActivationSecurityControllerTest {
     @Mock
     private VietQrActivationPlanService planService;
 
+    @Mock
+    private BookingChargeAuthorizationService authorizationService;
+
     @InjectMocks
     private VietQrActivationController controller;
 
@@ -54,6 +59,11 @@ class VietQrActivationSecurityControllerTest {
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
+        lenient().when(authorizationService.requireAll(any(), anyString())).thenAnswer(invocation -> {
+            Jwt jwt = invocation.getArgument(0);
+            throw new ResponseStatusException(jwt == null ? HttpStatus.UNAUTHORIZED : HttpStatus.FORBIDDEN,
+                    jwt == null ? "Missing authenticated principal" : "Missing permission");
+        });
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setCustomArgumentResolvers(new HandlerMethodArgumentResolver() {
                     @Override
@@ -78,6 +88,7 @@ class VietQrActivationSecurityControllerTest {
 
     private RequestPostProcessor withJwt(String subject, String permission) {
         return request -> {
+            lenient().doReturn(subject).when(authorizationService).requireAll(any(), eq(permission));
             var jwtBuilder = Jwt.withTokenValue("mock-jwt-token")
                     .header("alg", "none")
                     .subject(subject)

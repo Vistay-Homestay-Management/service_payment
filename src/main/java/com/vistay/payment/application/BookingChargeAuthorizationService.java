@@ -1,5 +1,12 @@
 package com.vistay.payment.application;
 
+import com.vistay.payment.application.PaymentAuthorizationClient.AccountKind;
+import com.vistay.payment.application.PaymentAuthorizationClient.AuthorizationException;
+import com.vistay.payment.application.PaymentAuthorizationClient.Scope;
+import com.vistay.payment.application.PaymentAuthorizationClient.Snapshot;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
@@ -8,77 +15,48 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.util.*;
-
-/**
- * Dedicated authorization component for payment collection orders and open balance projections.
- * Strictly enforces ViStay S4 specification: (permission, scope) grant isolation.
- * Prohibits role-based data scope bypass, removes synthetic UUID synthesis, and prevents IDOR.
- */
+/** Enforces Payment record scopes using the authoritative User Service snapshot. */
 @Service
 public class BookingChargeAuthorizationService {
+    private static final String PARTITION_BRANCH = "BRANCH";
 
     private final BookingBranchResolver bookingBranchResolver;
+    private final PaymentAuthorizationClient authorizations;
 
     public BookingChargeAuthorizationService(
-            @Autowired(required = false) BookingBranchResolver bookingBranchResolver) {
+            @Autowired(required = false) BookingBranchResolver bookingBranchResolver,
+            PaymentAuthorizationClient authorizations) {
         this.bookingBranchResolver = bookingBranchResolver;
+        this.authorizations = authorizations;
     }
 
     public UUID extractActorId(Jwt jwt) {
-        if (jwt == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing or unauthenticated security principal");
+        Principal principal = principal(jwt);
+        Snapshot snapshot = snapshot(principal);
+        if (!snapshot.active() || snapshot.profileId() == null) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "ViStay profile is inactive");
         }
+        return snapshot.profileId();
+    }
 
-        // 1. Check authoritative identity claims
-        for (String claimName : List.of("admin_user_id", "user_id", "account_id", "profile_id")) {
-            String val = jwt.getClaimAsString(claimName);
-            if (val != null && !val.isBlank()) {
-                try {
-                    return UUID.fromString(val.trim());
-                } catch (IllegalArgumentException ignored) {
-                }
-            }
-        }
+    public UUID requireActorId(Jwt jwt, String permission) {
+        Principal principal = principal(jwt);
+        return require(principal, permission).profileId();
+    }
 
-        // 2. Check token subject (supporting namespaced format like ADMIN:<uuid> or STAFF:<uuid>)
-        String sub = jwt.getSubject();
-        if (sub == null || sub.isBlank()) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Token subject is missing or blank");
-        }
-        sub = sub.trim();
-        if (sub.contains(":")) {
-            sub = sub.substring(sub.lastIndexOf(':') + 1);
-        }
-        try {
-            return UUID.fromString(sub);
-        } catch (IllegalArgumentException e) {
-            // Fail-closed: Never synthesize fake UUIDs. Canonical identity must be a valid UUID.
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED,
-                    "Principal subject does not contain a canonical UUID identity: " + jwt.getSubject());
-        }
+    public void requirePermission(Jwt jwt, String permission) {
+        require(principal(jwt), permission);
     }
 
     public UUID extractOptionalActorId(Jwt jwt) {
-        if (jwt == null || jwt.getSubject() == null || jwt.getSubject().isBlank()) {
+        if (jwt == null) {
             return null;
         }
         try {
             return extractActorId(jwt);
-        } catch (ResponseStatusException e) {
+        } catch (ResponseStatusException ignored) {
             return null;
         }
-    }
-
-    public UUID extractCustomerId(Jwt jwt) {
-        String customerIdClaim = jwt.getClaimAsString("customer_id");
-        if (customerIdClaim != null && !customerIdClaim.isBlank()) {
-            try {
-                return UUID.fromString(customerIdClaim.trim());
-            } catch (IllegalArgumentException ignored) {
-            }
-        }
-        return extractActorId(jwt);
     }
 
     public String extractCorrelationId(Jwt jwt) {
@@ -88,329 +66,188 @@ public class BookingChargeAuthorizationService {
         }
         if (jwt != null) {
             for (String claim : List.of("correlation_id", "cid", "trace_id")) {
-                String val = jwt.getClaimAsString(claim);
-                if (val != null && !val.isBlank()) {
-                    return val.trim();
+                String value = jwt.getClaimAsString(claim);
+                if (value != null && !value.isBlank()) {
+                    return value.trim();
                 }
             }
         }
         return UUID.randomUUID().toString();
     }
 
-    public List<String> extractAssignedBranches(Jwt jwt) {
-        List<String> bld = jwt.getClaimAsStringList("bld");
-        if (bld != null && !bld.isEmpty()) {
-            return bld;
+    public String requireAll(Jwt jwt, String permission) {
+        Principal principal = principal(jwt);
+        Snapshot snapshot = require(principal, permission);
+        if (!snapshot.scopes(permission).contains(Scope.ALL)) {
+            throw forbidden(permission + " requires ALL scope");
         }
-        List<String> branches = jwt.getClaimAsStringList("branches");
-        return branches != null ? branches : Collections.emptyList();
-    }
-
-    public boolean hasDataScope(Jwt jwt, String requiredPermission, String targetScope) {
-        if (jwt == null) {
-            return false;
-        }
-
-        // Strictly check claim 'grants' as List<Map<String, Object>> (S4 ViStay specification)
-        Object grantsObj = jwt.getClaims().get("grants");
-        if (grantsObj instanceof List<?> list) {
-            for (Object item : list) {
-                if (item instanceof Map<?, ?> map) {
-                    Object pObj = map.get("p");
-                    if (pObj == null) {
-                        pObj = map.get("permission");
-                    }
-                    String p = Objects.toString(pObj, "").trim();
-
-                    // Strict exact match: No wildcards allowed unless explicitly defined in platform contracts
-                    if (requiredPermission.equalsIgnoreCase(p)) {
-                        Object sObj = map.get("s");
-                        if (sObj == null) {
-                            sObj = map.get("scope");
-                        }
-                        String s = Objects.toString(sObj, "").trim();
-                        if (targetScope.equalsIgnoreCase(s)) {
-                            return true;
-                        }
-                    }
-                }
-            }
-            return false;
-        } else if (grantsObj instanceof Map<?, ?> map) {
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                String p = Objects.toString(entry.getKey(), "").trim();
-                if (requiredPermission.equalsIgnoreCase(p)) {
-                    Object val = entry.getValue();
-                    if (val instanceof Collection<?> coll) {
-                        for (Object elem : coll) {
-                            if (targetScope.equalsIgnoreCase(Objects.toString(elem, "").trim())) {
-                                return true;
-                            }
-                        }
-                    } else if (targetScope.equalsIgnoreCase(Objects.toString(val, "").trim())) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        // Strict zero-trust: If grants claim is missing, fail-closed. No fallback to unstructured scopes.
-        return false;
+        return snapshot.profileId().toString();
     }
 
     public void assertReadDataScope(BookingChargeResponse charge, Jwt jwt) {
-        if (jwt == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthenticated security context");
+        if (hasInternalFinanceAuthority()) {
+            return;
         }
+        Principal principal = principal(jwt);
+        Snapshot snapshot = require(principal, "payment:read");
 
-        // 1. Customer scope (ROLE_USER)
-        boolean isCustomer = hasRole(jwt, "ROLE_USER");
-        if (isCustomer && !isStaffCaller()) {
-            UUID customerId = extractCustomerId(jwt);
-            if (!customerId.equals(charge.customerId())) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Cannot access booking charges belonging to another customer");
+        if (principal.accountType() == AccountKind.CUSTOMER) {
+            if (!snapshot.scopes("payment:read").contains(Scope.OWN)
+                    || !snapshot.profileId().equals(charge.customerId())) {
+                throw forbidden("Customer cannot access charges belonging to another customer");
             }
             return;
         }
 
-        // Machine-to-machine internal service token
-        if (hasAuthority(jwt, "SCOPE_internal:finance")) {
-            return;
-        }
-
-        // 2. Staff Data Scope Evaluation: Must possess payment:read with matching data scope.
-        // Role alone (including ROLE_ADMIN) does not bypass explicit grant checking.
-        if (hasDataScope(jwt, "payment:read", "ALL")) {
-            return;
-        }
-
-        UUID staffId = extractActorId(jwt);
-
-        if (hasDataScope(jwt, "payment:read", "OWN")) {
-            if (charge.createdByAdminUserId() == null || !charge.createdByAdminUserId().equals(staffId)) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff with OWN scope cannot access charges created by another actor");
-            }
-            return;
-        }
-
-        if (hasDataScope(jwt, "payment:read", "BRANCH")) {
-            if (charge.branchId() == null) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff with BRANCH scope cannot access charges without an assigned branch");
-            }
-            List<String> assignedBranches = extractAssignedBranches(jwt);
-            if (!assignedBranches.contains(charge.branchId().toString())) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff is not authorized for branch " + charge.branchId());
-            }
-            return;
-        }
-
-        if (hasDataScope(jwt, "payment:read", "ASSIGNED")) {
-            if (bookingBranchResolver != null && bookingBranchResolver.isBookingAssignedTo(charge.bookingId(), staffId)) {
-                return;
-            }
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "Access denied: Staff with ASSIGNED scope is not assigned to booking " + charge.bookingId());
-        }
-
-        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                "Access denied: Missing valid data scope for payment:read (must have ALL, BRANCH, OWN, or ASSIGNED scope)");
+        assertStaffRecordScope(snapshot, "payment:read", charge.branchId(), charge.bookingId());
     }
 
     public void assertCreateDataScope(UUID branchId, UUID bookingId, UUID actorId, Jwt jwt) {
-        if (jwt == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthenticated security context");
-        }
-        if (hasAuthority(jwt, "SCOPE_internal:finance")) {
+        if (hasInternalFinanceAuthority()) {
             return;
         }
-
-        if (hasDataScope(jwt, "payment:write", "ALL")) {
-            return;
+        Principal principal = principal(jwt);
+        Snapshot snapshot = require(principal, "payment:write");
+        if (!snapshot.profileId().equals(actorId)) {
+            throw forbidden("Authenticated profile does not match command actor");
         }
-
-        if (hasDataScope(jwt, "payment:write", "BRANCH")) {
-            if (branchId == null) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff with BRANCH scope cannot create charges without an assigned branch");
-            }
-            List<String> assignedBranches = extractAssignedBranches(jwt);
-            if (!assignedBranches.contains(branchId.toString())) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff is not authorized to modify charges for branch " + branchId);
-            }
-            return;
-        }
-
-        if (hasDataScope(jwt, "payment:write", "OWN")) {
-            if (bookingBranchResolver == null || !bookingBranchResolver.isBookingOwnedBy(bookingId, actorId)) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff with OWN scope cannot create charges for a booking owned by another actor");
-            }
-            return;
-        }
-
-        if (hasDataScope(jwt, "payment:write", "ASSIGNED")) {
-            if (bookingBranchResolver == null || !bookingBranchResolver.isBookingAssignedTo(bookingId, actorId)) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff with ASSIGNED scope is not assigned to booking " + bookingId);
-            }
-            return;
-        }
-
-        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                "Access denied: Missing valid write data scope (must have ALL, BRANCH, OWN, or ASSIGNED scope for payment:write)");
+        assertStaffRecordScope(snapshot, "payment:write", branchId, bookingId);
     }
 
-    public void assertWriteDataScope(UUID branchId, UUID bookingId, UUID createdByAdminUserId, UUID actorId, Jwt jwt) {
-        if (jwt == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthenticated security context");
-        }
-        if (hasAuthority(jwt, "SCOPE_internal:finance")) {
+    public void assertWriteDataScope(
+            UUID branchId,
+            UUID bookingId,
+            UUID ignoredCreatedByAdminUserId,
+            UUID actorId,
+            Jwt jwt) {
+        if (hasInternalFinanceAuthority()) {
             return;
         }
-
-        // Must possess payment:write with matching data scope
-        if (hasDataScope(jwt, "payment:write", "ALL")) {
-            return;
+        Principal principal = principal(jwt);
+        Snapshot snapshot = require(principal, "payment:write");
+        if (!snapshot.profileId().equals(actorId)) {
+            throw forbidden("Authenticated profile does not match command actor");
         }
-
-        if (hasDataScope(jwt, "payment:write", "BRANCH")) {
-            if (branchId == null) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff with BRANCH scope cannot modify charges without an assigned branch");
-            }
-            List<String> assignedBranches = extractAssignedBranches(jwt);
-            if (!assignedBranches.contains(branchId.toString())) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff is not authorized to modify charges for branch " + branchId);
-            }
-            return;
-        }
-
-        if (hasDataScope(jwt, "payment:write", "OWN")) {
-            if (createdByAdminUserId != null && !createdByAdminUserId.equals(actorId)) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff with OWN scope cannot modify charges created by another actor");
-            }
-            return;
-        }
-
-        if (hasDataScope(jwt, "payment:write", "ASSIGNED")) {
-            if (bookingBranchResolver != null && bookingBranchResolver.isBookingAssignedTo(bookingId, actorId)) {
-                return;
-            }
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "Access denied: Staff with ASSIGNED scope is not assigned to booking " + bookingId);
-        }
-
-        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                "Access denied: Missing valid write data scope (must have ALL, BRANCH, OWN, or ASSIGNED scope for payment:write)");
+        assertStaffRecordScope(snapshot, "payment:write", branchId, bookingId);
     }
 
     public void assertBookingAccess(UUID bookingId, Jwt jwt) {
-        if (jwt == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthenticated security context");
-        }
-        if (hasAuthority(jwt, "SCOPE_internal:finance")) {
+        if (hasInternalFinanceAuthority()) {
             return;
         }
-        if (hasDataScope(jwt, "payment:read", "ALL")) {
-            return;
-        }
+        Principal principal = principal(jwt);
+        Snapshot snapshot = require(principal, "payment:read");
 
-        boolean isCustomer = hasRole(jwt, "ROLE_USER");
-        if (isCustomer && !isStaffCaller()) {
-            UUID customerId = extractCustomerId(jwt);
-            if (bookingBranchResolver == null) {
-                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Authoritative booking resolver unavailable: fail-closed");
-            }
+        if (principal.accountType() == AccountKind.CUSTOMER) {
+            requireResolver();
             Optional<UUID> bookingCustomer = bookingBranchResolver.resolveCustomerId(bookingId);
-            if (bookingCustomer.isEmpty() || !bookingCustomer.get().equals(customerId)) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Customer cannot access bookings belonging to another customer");
+            if (!snapshot.scopes("payment:read").contains(Scope.OWN)
+                    || bookingCustomer.isEmpty()
+                    || !bookingCustomer.get().equals(snapshot.profileId())) {
+                throw forbidden("Customer cannot access bookings belonging to another customer");
             }
             return;
         }
 
-        UUID staffId = extractActorId(jwt);
+        UUID branchId = resolveBranchForPartition(snapshot, "payment:read", bookingId);
+        assertStaffRecordScope(snapshot, "payment:read", branchId, bookingId);
+    }
 
-        if (hasDataScope(jwt, "payment:read", "BRANCH")) {
-            if (bookingBranchResolver == null) {
-                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Authoritative branch resolver unavailable");
-            }
-            Optional<UUID> branchOpt = bookingBranchResolver.resolveBranchId(bookingId);
-            if (branchOpt.isEmpty()) {
-                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Authoritative booking branch cannot be resolved: " + bookingId);
-            }
-            List<String> assignedBranches = extractAssignedBranches(jwt);
-            if (!assignedBranches.contains(branchOpt.get().toString())) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied: Staff is not authorized for booking branch");
-            }
+    private void assertStaffRecordScope(
+            Snapshot snapshot,
+            String permission,
+            UUID branchId,
+            UUID bookingId) {
+        var scopes = snapshot.scopes(permission);
+        if (scopes.contains(Scope.ALL)) {
             return;
         }
-
-        if (hasDataScope(jwt, "payment:read", "ASSIGNED")) {
-            if (bookingBranchResolver == null || !bookingBranchResolver.isBookingAssignedTo(bookingId, staffId)) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied: Staff is not assigned to booking " + bookingId);
-            }
+        if (scopes.contains(Scope.PARTITION) && branchId != null
+                && snapshot.partitions(permission).stream().anyMatch(binding ->
+                        PARTITION_BRANCH.equals(binding.partitionType())
+                                && branchId.equals(binding.partitionId()))) {
             return;
         }
-
-        if (hasDataScope(jwt, "payment:read", "OWN")) {
-            if (bookingBranchResolver == null || !bookingBranchResolver.isBookingOwnedBy(bookingId, staffId)) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                        "Access denied: Staff with OWN scope is not the owner of booking " + bookingId);
-            }
-            return;
-        }
-
-        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied: Missing valid data scope for booking");
-    }
-
-    private boolean isStaffCaller() {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth == null) {
-            return false;
-        }
-        return auth.getAuthorities().stream().anyMatch(a -> {
-            String role = a.getAuthority();
-            return "ROLE_ADMIN".equals(role)
-                    || "ROLE_FINANCE".equals(role)
-                    || "ROLE_RECEPTIONIST".equals(role)
-                    || "ROLE_SYSTEM".equals(role)
-                    || "SCOPE_internal:finance".equals(role);
-        });
-    }
-
-    private boolean hasRole(Jwt jwt, String role) {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && auth.getAuthorities().stream().anyMatch(a -> role.equals(a.getAuthority()))) {
-            return true;
-        }
-        List<String> roles = jwt.getClaimAsStringList("roles");
-        return roles != null && roles.contains(role.replace("ROLE_", ""));
-    }
-
-    private boolean hasAuthority(Jwt jwt, String authority) {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && auth.getAuthorities().stream().anyMatch(a -> authority.equals(a.getAuthority()))) {
-            return true;
-        }
-        String scope = jwt.getClaimAsString("scope");
-        if (scope != null) {
-            String target = authority.startsWith("SCOPE_") ? authority.substring(6) : authority;
-            for (String part : scope.split("\\s+")) {
-                if (target.equalsIgnoreCase(part)) {
-                    return true;
-                }
+        if (scopes.contains(Scope.OWN)) {
+            requireResolver();
+            if (bookingBranchResolver.isBookingOwnedBy(bookingId, snapshot.profileId())) {
+                return;
             }
         }
-        return false;
+        if (scopes.contains(Scope.ASSIGNED)) {
+            requireResolver();
+            if (bookingBranchResolver.isBookingAssignedTo(bookingId, snapshot.profileId())) {
+                return;
+            }
+        }
+        throw forbidden("Record is outside the granted scope for " + permission);
     }
+
+    private UUID resolveBranchForPartition(Snapshot snapshot, String permission, UUID bookingId) {
+        if (!snapshot.scopes(permission).contains(Scope.PARTITION)) {
+            return null;
+        }
+        requireResolver();
+        return bookingBranchResolver.resolveBranchId(bookingId)
+                .orElseThrow(() -> forbidden("Authoritative booking branch cannot be resolved"));
+    }
+
+    private void requireResolver() {
+        if (bookingBranchResolver == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Authoritative booking resolver is unavailable: fail-closed");
+        }
+    }
+
+    private Snapshot require(Principal principal, String permission) {
+        try {
+            return authorizations.require(principal.accountType(), principal.accountId(), permission);
+        } catch (AuthorizationException denied) {
+            HttpStatus status = denied.code().startsWith("AUTHORIZATION_")
+                    ? HttpStatus.SERVICE_UNAVAILABLE
+                    : HttpStatus.FORBIDDEN;
+            throw new ResponseStatusException(status, denied.getMessage());
+        }
+    }
+
+    private Snapshot snapshot(Principal principal) {
+        try {
+            return authorizations.get(principal.accountType(), principal.accountId());
+        } catch (AuthorizationException unavailable) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, unavailable.getMessage());
+        }
+    }
+
+    private Principal principal(Jwt jwt) {
+        if (jwt == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing authenticated principal");
+        }
+        UUID accountId;
+        try {
+            accountId = UUID.fromString(jwt.getSubject());
+        } catch (IllegalArgumentException | NullPointerException invalid) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED,
+                    "JWT subject is not a ViStay account id");
+        }
+        String rawType = jwt.getClaimAsString("account_type");
+        try {
+            return new Principal(AccountKind.valueOf(rawType == null ? "" : rawType.trim().toUpperCase()), accountId);
+        } catch (IllegalArgumentException invalid) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED,
+                    "JWT account_type must be CUSTOMER, ADMIN or HOST");
+        }
+    }
+
+    private boolean hasInternalFinanceAuthority() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null && authentication.getAuthorities().stream()
+                .anyMatch(authority -> "SCOPE_internal:finance".equals(authority.getAuthority())
+                        || "ROLE_SYSTEM".equals(authority.getAuthority()));
+    }
+
+    private static ResponseStatusException forbidden(String reason) {
+        return new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied: " + reason);
+    }
+
+    private record Principal(AccountKind accountType, UUID accountId) {}
 }
-

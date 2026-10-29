@@ -5,6 +5,7 @@ import com.vistay.payment.adapter.out.persistence.DefaultBookingBranchResolver;
 import com.vistay.payment.application.BookingBranchResolver;
 import com.vistay.payment.application.BookingChargeAuthorizationService;
 import com.vistay.payment.application.BookingChargeService;
+import com.vistay.payment.application.PaymentAuthorizationClient;
 import com.vistay.payment.domain.BookingChargeAdjustmentRepository;
 import com.vistay.payment.domain.BookingChargeAllocationRepository;
 import com.vistay.payment.domain.BookingChargeRepository;
@@ -38,6 +39,9 @@ class PaymentContextStartupIntegrationTest {
 
     @MockitoBean
     private BookingChargeAdjustmentRepository adjustmentRepository;
+
+    @MockitoBean
+    private PaymentAuthorizationClient paymentAuthorizationClient;
 
     @Autowired
     private ApplicationContext applicationContext;

@@ -15,12 +15,14 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 
 import java.time.Instant;
@@ -69,7 +71,7 @@ class VietQrActivationControllerSecurityTest {
     private VietQrActivationPlanService activationPlanService;
 
     @MockitoBean
-    private BookingBranchResolver bookingBranchResolver;
+    private BookingChargeAuthorizationService authorizationService;
 
     @MockitoBean
     private JwtDecoder jwtDecoder;
@@ -79,10 +81,19 @@ class VietQrActivationControllerSecurityTest {
 
     @BeforeEach
     void setUp() {
+        when(authorizationService.requireAll(any(), any(String.class)))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Missing permission"));
         mockMvc = MockMvcBuilders
                 .webAppContextSetup(webApplicationContext)
                 .apply(springSecurity())
                 .build();
+    }
+
+    private String allow(String permission) {
+        String actor = adminUserId.toString();
+        org.mockito.Mockito.doReturn(actor).when(authorizationService)
+                .requireAll(any(), eq(permission));
+        return actor;
     }
 
     private VietQrActivationPlanResponse samplePlanResponse(VietQrPlanStatus status) {
@@ -125,13 +136,13 @@ class VietQrActivationControllerSecurityTest {
     @DisplayName("P0-04 VietQR Security: Request operatorId cannot override authenticated actor")
     void activatePlan_RequestOperatorIdCannotOverrideAuthenticatedActor() throws Exception {
         UUID spoofedOperatorId = UUID.randomUUID();
-        String authenticatedActor = "ADMIN:" + adminUserId;
+        String authenticatedActor = allow("vietqr:plan:activate");
         when(activationPlanService.activatePlan(planId, authenticatedActor))
                 .thenReturn(samplePlanResponse(VietQrPlanStatus.ACTIVE));
 
         mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
                         .param("operatorId", spoofedOperatorId.toString())
-                        .with(jwt().jwt(j -> j.subject(authenticatedActor))
+                        .with(jwt().jwt(j -> j.subject(adminUserId.toString()).claim("account_type", "ADMIN"))
                                 .authorities(new SimpleGrantedAuthority("SCOPE_vietqr:plan:activate"))))
                 .andExpect(status().isOk());
 
@@ -141,12 +152,12 @@ class VietQrActivationControllerSecurityTest {
     @Test
     @DisplayName("P0-04 VietQR Security: Valid caller with vietqr:plan:activate activates plan -> 200 OK")
     void activatePlan_ValidCaller_Success() throws Exception {
-        String authenticatedActor = "ADMIN:" + adminUserId;
+        String authenticatedActor = allow("vietqr:plan:activate");
         when(activationPlanService.activatePlan(planId, authenticatedActor))
                 .thenReturn(samplePlanResponse(VietQrPlanStatus.ACTIVE));
 
         mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
-                        .with(jwt().jwt(j -> j.subject(authenticatedActor))
+                        .with(jwt().jwt(j -> j.subject(adminUserId.toString()).claim("account_type", "ADMIN"))
                                 .authorities(new SimpleGrantedAuthority("SCOPE_vietqr:plan:activate"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
@@ -182,6 +193,7 @@ class VietQrActivationControllerSecurityTest {
     @Test
     @DisplayName("P0-04 VietQR Security: Caller with vietqr:plan:read reads active plan -> 200 OK")
     void getActivePlan_WithReadPermission_Returns200() throws Exception {
+        allow("vietqr:plan:read");
         when(activationPlanService.getActivePlan())
                 .thenReturn(Optional.of(samplePlanResponse(VietQrPlanStatus.ACTIVE)));
 
