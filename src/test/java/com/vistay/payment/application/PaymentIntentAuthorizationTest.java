@@ -87,6 +87,27 @@ class PaymentIntentAuthorizationTest {
         assertEquals(HttpStatus.FORBIDDEN, denied.getStatusCode());
     }
 
+    @Test
+    void bookingDependencyFailureIsReportedAsServiceUnavailable() {
+        var accountId = UUID.randomUUID();
+        var profileId = UUID.randomUUID();
+        var bookingId = UUID.randomUUID();
+        var jwt = jwt(accountId, "ADMIN");
+        when(client.require(AccountKind.ADMIN, accountId, "payment:read"))
+            .thenReturn(snapshot(profileId, "payment:read", Scope.ASSIGNED));
+        when(bookingResolver.isBookingAssignedTo(bookingId, profileId))
+            .thenThrow(new BookingProjectionException("unavailable", new RuntimeException()));
+
+        var denied = assertThrows(ResponseStatusException.class,
+            () -> new BookingChargeAuthorizationService(bookingResolver, client)
+                .assertPaymentIntentAccess(
+                    new PaymentIntentAccess(bookingId, UUID.randomUUID()),
+                    jwt,
+                    "payment:read"));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, denied.getStatusCode());
+    }
+
     private static Jwt jwt(UUID accountId, String accountType) {
         var jwt = mock(Jwt.class);
         when(jwt.getSubject()).thenReturn(accountId.toString());

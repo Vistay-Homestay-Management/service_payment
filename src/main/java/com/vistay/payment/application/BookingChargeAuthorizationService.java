@@ -170,7 +170,7 @@ public class BookingChargeAuthorizationService {
 
         if (principal.accountType() == AccountKind.CUSTOMER) {
             requireResolver();
-            Optional<UUID> bookingCustomer = bookingBranchResolver.resolveCustomerId(bookingId);
+            Optional<UUID> bookingCustomer = resolveCustomerId(bookingId);
             if (!snapshot.scopes("payment:read").contains(Scope.OWN)
                     || bookingCustomer.isEmpty()
                     || !bookingCustomer.get().equals(snapshot.profileId())) {
@@ -200,13 +200,13 @@ public class BookingChargeAuthorizationService {
         }
         if (scopes.contains(Scope.OWN)) {
             requireResolver();
-            if (bookingBranchResolver.isBookingOwnedBy(bookingId, snapshot.profileId())) {
+            if (isBookingOwnedBy(bookingId, snapshot.profileId())) {
                 return;
             }
         }
         if (scopes.contains(Scope.ASSIGNED)) {
             requireResolver();
-            if (bookingBranchResolver.isBookingAssignedTo(bookingId, snapshot.profileId())) {
+            if (isBookingAssignedTo(bookingId, snapshot.profileId())) {
                 return;
             }
         }
@@ -218,8 +218,45 @@ public class BookingChargeAuthorizationService {
             return null;
         }
         requireResolver();
-        return bookingBranchResolver.resolveBranchId(bookingId)
+        return resolveBranchId(bookingId)
                 .orElseThrow(() -> forbidden("Authoritative booking branch cannot be resolved"));
+    }
+
+    private Optional<UUID> resolveBranchId(UUID bookingId) {
+        try {
+            return bookingBranchResolver.resolveBranchId(bookingId);
+        } catch (BookingProjectionException unavailable) {
+            throw projectionUnavailable(unavailable);
+        }
+    }
+
+    private Optional<UUID> resolveCustomerId(UUID bookingId) {
+        try {
+            return bookingBranchResolver.resolveCustomerId(bookingId);
+        } catch (BookingProjectionException unavailable) {
+            throw projectionUnavailable(unavailable);
+        }
+    }
+
+    private boolean isBookingAssignedTo(UUID bookingId, UUID profileId) {
+        try {
+            return bookingBranchResolver.isBookingAssignedTo(bookingId, profileId);
+        } catch (BookingProjectionException unavailable) {
+            throw projectionUnavailable(unavailable);
+        }
+    }
+
+    private boolean isBookingOwnedBy(UUID bookingId, UUID profileId) {
+        try {
+            return bookingBranchResolver.isBookingOwnedBy(bookingId, profileId);
+        } catch (BookingProjectionException unavailable) {
+            throw projectionUnavailable(unavailable);
+        }
+    }
+
+    private static ResponseStatusException projectionUnavailable(BookingProjectionException failure) {
+        return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+            "Authoritative Booking projection is unavailable: fail-closed", failure);
     }
 
     private void requireResolver() {

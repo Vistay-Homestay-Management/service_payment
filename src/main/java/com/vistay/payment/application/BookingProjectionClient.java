@@ -10,6 +10,10 @@ import java.util.UUID;
 public interface BookingProjectionClient {
     Optional<UUID> getBranchId(UUID bookingId);
 
+    default Optional<UUID> getPropertyId(UUID bookingId) {
+        return Optional.empty();
+    }
+
     default boolean isBookingAssignedTo(UUID bookingId, UUID staffId) {
         return false;
     }

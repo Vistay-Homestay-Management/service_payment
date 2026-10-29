@@ -70,6 +70,10 @@ spring:
           target: ${USER_GRPC_ADDRESS:static://localhost:9091}
           ssl:
             bundle: ${USER_GRPC_SSL_BUNDLE:grpc-user-client}
+        booking:
+          target: ${BOOKING_GRPC_ADDRESS:static://localhost:9092}
+          ssl:
+            bundle: ${BOOKING_GRPC_SSL_BUNDLE:grpc-user-client}
   ssl:
     bundle:
       pem:
@@ -116,6 +120,8 @@ vistay:
   authorization:
     local-cache-ttl: ${AUTHORIZATION_LOCAL_CACHE_TTL:30s}
     grpc-deadline: ${AUTHORIZATION_GRPC_DEADLINE:2s}
+  booking:
+    authorization-deadline: ${BOOKING_AUTHORIZATION_GRPC_DEADLINE:2s}
 
 logging:
   structured:
