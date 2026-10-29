@@ -10,7 +10,7 @@ import java.util.UUID;
 /**
  * Default implementation of BookingBranchResolver.
  * Resolves customer and assignment relationships authoritatively from Booking Service.
- * Booking does not currently own a branch relationship, so branch partition checks remain fail-closed.
+ * Booking enriches its authorization record with the effective branch resolved from Property Service.
  * Fails closed if the external client is unavailable or if booking does not exist.
  * Local booking charge projections are NEVER treated as authoritative for branch ownership.
  */

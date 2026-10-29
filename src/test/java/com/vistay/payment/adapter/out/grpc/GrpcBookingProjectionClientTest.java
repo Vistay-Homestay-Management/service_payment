@@ -1,6 +1,7 @@
 package com.vistay.payment.adapter.out.grpc;
 
 import com.vistay.contracts.booking.v1.GetBookingAuthorizationRecordResponse;
+import com.vistay.contracts.booking.v1.BookingPartitionResolutionStatus;
 import com.vistay.payment.application.BookingProjectionException;
 import java.util.Optional;
 import java.util.UUID;
@@ -52,6 +53,41 @@ class GrpcBookingProjectionClientTest {
         assertThatThrownBy(() -> client.isBookingAssignedTo(
             UUID.randomUUID(), UUID.randomUUID()))
             .isInstanceOf(BookingProjectionException.class);
+    }
+
+    @Test
+    void resolvesAuthoritativeBranchForPartitionScope() {
+        var bookingId = UUID.randomUUID();
+        var branchId = UUID.randomUUID();
+        var record = GetBookingAuthorizationRecordResponse.newBuilder()
+            .setBookingId(bookingId.toString())
+            .setPropertyId(UUID.randomUUID().toString())
+            .setPartitionResolutionStatus(
+                BookingPartitionResolutionStatus.BOOKING_PARTITION_RESOLUTION_STATUS_MAPPED)
+            .setBranchId(branchId.toString())
+            .setPartitionMembershipVersion(3)
+            .build();
+
+        assertThat(new GrpcBookingProjectionClient(ignored -> Optional.of(record))
+            .getBranchId(bookingId)).contains(branchId);
+    }
+
+    @Test
+    void missingMappingDeniesWhileUnavailableProjectionReturnsServiceFailure() {
+        var bookingId = UUID.randomUUID();
+        var missing = GetBookingAuthorizationRecordResponse.newBuilder()
+            .setBookingId(bookingId.toString())
+            .setPropertyId(UUID.randomUUID().toString())
+            .setPartitionResolutionStatus(
+                BookingPartitionResolutionStatus.BOOKING_PARTITION_RESOLUTION_STATUS_MISSING)
+            .build();
+        assertThat(new GrpcBookingProjectionClient(ignored -> Optional.of(missing))
+            .getBranchId(bookingId)).isEmpty();
+
+        var unavailable = missing.toBuilder().setPartitionResolutionStatus(
+            BookingPartitionResolutionStatus.BOOKING_PARTITION_RESOLUTION_STATUS_UNAVAILABLE).build();
+        assertThatThrownBy(() -> new GrpcBookingProjectionClient(ignored -> Optional.of(unavailable))
+            .getBranchId(bookingId)).isInstanceOf(BookingProjectionException.class);
     }
 
 }

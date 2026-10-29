@@ -1,6 +1,7 @@
 package com.vistay.payment.adapter.out.grpc;
 
 import com.vistay.contracts.booking.v1.BookingAuthorizationServiceGrpc;
+import com.vistay.contracts.booking.v1.BookingPartitionResolutionStatus;
 import com.vistay.contracts.booking.v1.GetBookingAuthorizationRecordRequest;
 import com.vistay.contracts.booking.v1.GetBookingAuthorizationRecordResponse;
 import com.vistay.payment.application.BookingProjectionClient;
@@ -34,8 +35,25 @@ public class GrpcBookingProjectionClient implements BookingProjectionClient {
 
     @Override
     public Optional<UUID> getBranchId(UUID bookingId) {
-        // Booking currently owns property, customer and assignment relationships, not branch topology.
-        return Optional.empty();
+        return lookup(bookingId).flatMap(record -> {
+            if (record.getPartitionResolutionStatus()
+                == BookingPartitionResolutionStatus.BOOKING_PARTITION_RESOLUTION_STATUS_MISSING) {
+                return Optional.empty();
+            }
+            if (record.getPartitionResolutionStatus()
+                != BookingPartitionResolutionStatus.BOOKING_PARTITION_RESOLUTION_STATUS_MAPPED
+                || !record.hasBranchId()) {
+                throw new BookingProjectionException(
+                    "Authoritative Property-to-Branch projection is unavailable",
+                    new IllegalStateException("Booking projection did not resolve a branch"));
+            }
+            try {
+                return Optional.of(UUID.fromString(record.getBranchId()));
+            } catch (IllegalArgumentException malformedContract) {
+                throw new BookingProjectionException(
+                    "Authoritative Property-to-Branch projection is malformed", malformedContract);
+            }
+        });
     }
 
     @Override
