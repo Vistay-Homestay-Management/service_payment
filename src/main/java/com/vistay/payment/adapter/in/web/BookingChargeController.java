@@ -36,7 +36,7 @@ public class BookingChargeController {
     public ResponseEntity<BookingChargeResponse> createCharge(
             @Valid @RequestBody CreateBookingChargeCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.requireActorId(jwt, "payment:write");
+        UUID actorId = authorizationService.requireActorId(jwt, "payment:create");
 
         UUID resolvedBranchId = null;
         if (bookingBranchResolver != null) {
@@ -57,7 +57,8 @@ public class BookingChargeController {
                     "Authoritative booking branch resolver is not available: fail-closed");
         }
 
-        authorizationService.assertCreateDataScope(resolvedBranchId, command.bookingId(), actorId, jwt);
+        authorizationService.assertCreateDataScope(
+                resolvedBranchId, command.bookingId(), actorId, jwt, "payment:create");
         BookingChargeResponse response = bookingChargeService.createCharge(command, actorId);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
@@ -77,9 +78,10 @@ public class BookingChargeController {
             @PathVariable UUID id,
             @Valid @RequestBody WaiveBookingChargeCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.requireActorId(jwt, "payment:write");
+        UUID actorId = authorizationService.requireActorId(jwt, "payment:reconcile");
         BookingChargeResponse charge = bookingChargeService.getChargeById(id);
-        authorizationService.assertWriteDataScope(charge.branchId(), charge.bookingId(), charge.createdByAdminUserId(), actorId, jwt);
+        authorizationService.assertWriteDataScope(charge.branchId(), charge.bookingId(),
+                charge.createdByAdminUserId(), actorId, jwt, "payment:reconcile");
         return ResponseEntity.ok(bookingChargeService.waiveCharge(id, command, actorId));
     }
 
@@ -88,9 +90,10 @@ public class BookingChargeController {
             @PathVariable UUID id,
             @Valid @RequestBody CancelBookingChargeCommand command,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID actorId = authorizationService.requireActorId(jwt, "payment:write");
+        UUID actorId = authorizationService.requireActorId(jwt, "payment:cancel");
         BookingChargeResponse charge = bookingChargeService.getChargeById(id);
-        authorizationService.assertWriteDataScope(charge.branchId(), charge.bookingId(), charge.createdByAdminUserId(), actorId, jwt);
+        authorizationService.assertWriteDataScope(charge.branchId(), charge.bookingId(),
+                charge.createdByAdminUserId(), actorId, jwt, "payment:cancel");
         return ResponseEntity.ok(bookingChargeService.cancelCharge(id, command, actorId));
     }
 

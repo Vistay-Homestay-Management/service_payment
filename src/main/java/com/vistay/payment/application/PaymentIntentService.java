@@ -72,6 +72,28 @@ public class PaymentIntentService {
         return view(intents.findById(id).orElseThrow(() -> new IllegalArgumentException("Payment intent not found")));
     }
 
+    @Transactional(readOnly = true)
+    public PaymentIntentAccess access(UUID id) {
+        var intent = intents.findById(id)
+            .orElseThrow(() -> new IllegalArgumentException("Payment intent not found"));
+        return new PaymentIntentAccess(intent.getBookingId(), intent.getCustomerId());
+    }
+
+    @Transactional(readOnly = true)
+    public PaymentIntentAccess accessForCreate(UUID financeRequestId, String idempotencyKey) {
+        validateIdempotencyKey(idempotencyKey);
+        var existing = intents.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            if (!existing.get().getFinancePaymentRequestId().equals(financeRequestId)) {
+                throw new IllegalArgumentException("Idempotency key belongs to another finance request");
+            }
+            return new PaymentIntentAccess(
+                existing.get().getBookingId(), existing.get().getCustomerId());
+        }
+        var instruction = finance.get(financeRequestId);
+        return new PaymentIntentAccess(instruction.bookingId(), instruction.customerId());
+    }
+
     @Transactional
     public PaymentIntentView cancel(UUID id, long expectedVersion, String reason) {
         var intent = intents.findById(id).orElseThrow(() -> new IllegalArgumentException("Payment intent not found"));

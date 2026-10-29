@@ -102,16 +102,21 @@ public class BookingChargeAuthorizationService {
         assertStaffRecordScope(snapshot, "payment:read", charge.branchId(), charge.bookingId());
     }
 
-    public void assertCreateDataScope(UUID branchId, UUID bookingId, UUID actorId, Jwt jwt) {
+    public void assertCreateDataScope(
+            UUID branchId,
+            UUID bookingId,
+            UUID actorId,
+            Jwt jwt,
+            String permission) {
         if (hasInternalFinanceAuthority()) {
             return;
         }
         Principal principal = principal(jwt);
-        Snapshot snapshot = require(principal, "payment:write");
+        Snapshot snapshot = require(principal, permission);
         if (!snapshot.profileId().equals(actorId)) {
             throw forbidden("Authenticated profile does not match command actor");
         }
-        assertStaffRecordScope(snapshot, "payment:write", branchId, bookingId);
+        assertStaffRecordScope(snapshot, permission, branchId, bookingId);
     }
 
     public void assertWriteDataScope(
@@ -119,16 +124,41 @@ public class BookingChargeAuthorizationService {
             UUID bookingId,
             UUID ignoredCreatedByAdminUserId,
             UUID actorId,
-            Jwt jwt) {
+            Jwt jwt,
+            String permission) {
         if (hasInternalFinanceAuthority()) {
             return;
         }
         Principal principal = principal(jwt);
-        Snapshot snapshot = require(principal, "payment:write");
+        Snapshot snapshot = require(principal, permission);
         if (!snapshot.profileId().equals(actorId)) {
             throw forbidden("Authenticated profile does not match command actor");
         }
-        assertStaffRecordScope(snapshot, "payment:write", branchId, bookingId);
+        assertStaffRecordScope(snapshot, permission, branchId, bookingId);
+    }
+
+    public void assertPaymentIntentAccess(
+            PaymentIntentAccess access,
+            Jwt jwt,
+            String permission) {
+        if (access == null || access.bookingId() == null) {
+            throw forbidden("Payment intent has no authoritative booking relationship");
+        }
+        Principal principal = principal(jwt);
+        Snapshot snapshot = require(principal, permission);
+        var scopes = snapshot.scopes(permission);
+
+        if (principal.accountType() == AccountKind.CUSTOMER) {
+            if (!scopes.contains(Scope.OWN)
+                    || access.customerId() == null
+                    || !snapshot.profileId().equals(access.customerId())) {
+                throw forbidden("Customer cannot access a payment intent owned by another customer");
+            }
+            return;
+        }
+
+        UUID branchId = resolveBranchForPartition(snapshot, permission, access.bookingId());
+        assertStaffRecordScope(snapshot, permission, branchId, access.bookingId());
     }
 
     public void assertBookingAccess(UUID bookingId, Jwt jwt) {

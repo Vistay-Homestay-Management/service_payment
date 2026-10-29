@@ -131,7 +131,7 @@ class BookingChargeSecurityWebMvcTest {
     }
 
     @Test
-    @DisplayName("Spring Security: POST createCharge without SCOPE_payment:write returns 403 Forbidden via @PreAuthorize")
+    @DisplayName("Spring Security: POST createCharge without authorization snapshot permission returns 403 Forbidden")
     void postCreateCharge_withoutRequiredAuthority_returns403ViaPreAuthorize() throws Exception {
         String json = """
             {
@@ -172,7 +172,7 @@ class BookingChargeSecurityWebMvcTest {
         """.formatted(UUID.randomUUID(), UUID.randomUUID());
 
         mockMvc.perform(post("/api/v1/payment/booking-charges/{id}/apply-payment", chargeId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority("SCOPE_payment:write")))
+                        .with(jwt().authorities(new SimpleGrantedAuthority("SCOPE_payment:create")))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isForbidden());
@@ -204,7 +204,7 @@ class BookingChargeSecurityWebMvcTest {
     @Test
     @DisplayName("F-01: Staff with BRANCH scope attempting createCharge when booking branch is unresolvable fails-closed with 403")
     void postCreateCharge_branchScope_unresolvableBookingBranch_returns403() throws Exception {
-        allowAdmin("payment:write", PaymentAuthorizationClient.Scope.PARTITION, branchA);
+        allowAdmin("payment:create", PaymentAuthorizationClient.Scope.PARTITION, branchA);
         when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.empty());
 
         String json = """
@@ -228,7 +228,7 @@ class BookingChargeSecurityWebMvcTest {
                                 .jwt(builder -> builder
                                         .subject(staffUserId.toString())
                                         .claim("account_type", "ADMIN"))
-                                .authorities(new SimpleGrantedAuthority("SCOPE_payment:write"),
+                                .authorities(new SimpleGrantedAuthority("SCOPE_payment:create"),
                                              new SimpleGrantedAuthority("ROLE_RECEPTIONIST")))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))

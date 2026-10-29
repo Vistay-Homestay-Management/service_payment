@@ -173,9 +173,9 @@ class BookingChargeSecurityMockMvcIntegrationTest {
     }
 
     @Test
-    @DisplayName("HTTP MockMvc: Token có SCOPE_payment:write nhưng không có Data Scope -> 403 Forbidden")
+    @DisplayName("HTTP MockMvc: Token có SCOPE_payment:create nhưng không có Data Scope -> 403 Forbidden")
     void postCreateCharge_WithoutDataScope_Returns403() throws Exception {
-        Jwt jwt = createJwt("ADMIN:" + staffUserId, Map.of("scope", "payment:write"));
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, Map.of("scope", "payment:create"));
         String json = """
             {
               "chargeCode": "CHG-TEST-MVC",
@@ -195,7 +195,7 @@ class BookingChargeSecurityMockMvcIntegrationTest {
         mockMvc.perform(post("/api/v1/payment/booking-charges")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json)
-                        .with(withJwt(jwt, List.of(new SimpleGrantedAuthority("SCOPE_payment:write")))))
+                        .with(withJwt(jwt, List.of(new SimpleGrantedAuthority("SCOPE_payment:create")))))
                 .andExpect(status().isForbidden());
     }
 
@@ -203,7 +203,7 @@ class BookingChargeSecurityMockMvcIntegrationTest {
     @DisplayName("HTTP MockMvc: Nhân viên BRANCH scope tạo charge cho đúng chi nhánh được cấp -> 201 Created")
     void postCreateCharge_WithValidBranchScope_Returns201() throws Exception {
         Map<String, Object> claims = Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "BRANCH")),
+                "grants", List.of(Map.of("p", "payment:create", "s", "BRANCH")),
                 "bld", List.of(branchA.toString())
         );
         Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
@@ -240,7 +240,7 @@ class BookingChargeSecurityMockMvcIntegrationTest {
     @DisplayName("HTTP MockMvc: Nhân viên BRANCH scope tạo charge với branchId null -> 403 Forbidden")
     void postCreateCharge_BranchScopeWithNullBranch_Returns403() throws Exception {
         Map<String, Object> claims = Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "BRANCH")),
+                "grants", List.of(Map.of("p", "payment:create", "s", "BRANCH")),
                 "bld", List.of(branchA.toString())
         );
         Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);

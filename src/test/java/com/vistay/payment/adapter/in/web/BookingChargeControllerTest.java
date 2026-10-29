@@ -393,9 +393,9 @@ class BookingChargeControllerTest {
     @Test
     @DisplayName("P0 Write Scope: Token có quyền write nhưng thiếu Data Scope (không ALL/BRANCH/OWN/ASSIGNED) -> 403 Forbidden")
     void createCharge_MissingDataScope_Throws403() {
-        Jwt jwt = createJwt("ADMIN:" + staffUserId, Map.of("scope", "payment:write"));
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, Map.of("scope", "payment:create"));
         SecurityContext context = SecurityContextHolder.createEmptyContext();
-        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("SCOPE_payment:write"))));
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("SCOPE_payment:create"))));
         SecurityContextHolder.setContext(context);
 
         CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
@@ -409,7 +409,7 @@ class BookingChargeControllerTest {
                 .satisfies(e -> {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-                    assertThat(rse.getReason()).contains("Missing permission payment:write");
+                    assertThat(rse.getReason()).contains("Missing permission payment:create");
                 });
     }
 
@@ -417,7 +417,7 @@ class BookingChargeControllerTest {
     @DisplayName("P0 Write Scope: Nhân viên BRANCH scope tạo charge với branchId null -> 403 Forbidden")
     void createCharge_BranchScope_NullBranchId_Throws403() {
         Map<String, Object> claims = Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "BRANCH")),
+                "grants", List.of(Map.of("p", "payment:create", "s", "BRANCH")),
                 "bld", List.of(branchA.toString())
         );
         Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
@@ -446,7 +446,7 @@ class BookingChargeControllerTest {
         when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(branchB));
 
         Map<String, Object> claims = Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "BRANCH")),
+                "grants", List.of(Map.of("p", "payment:create", "s", "BRANCH")),
                 "bld", List.of(branchA.toString())
         );
         Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
@@ -476,7 +476,7 @@ class BookingChargeControllerTest {
         when(bookingBranchResolver.isBookingOwnedBy(bookingId, staffUserId)).thenReturn(true);
 
         Map<String, Object> claims = Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "OWN"))
+                "grants", List.of(Map.of("p", "payment:create", "s", "OWN"))
         );
         Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
         SecurityContext context = SecurityContextHolder.createEmptyContext();
@@ -504,7 +504,7 @@ class BookingChargeControllerTest {
         when(bookingBranchResolver.isBookingAssignedTo(bookingId, staffUserId)).thenReturn(true);
 
         Map<String, Object> claims = Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "ASSIGNED"))
+                "grants", List.of(Map.of("p", "payment:create", "s", "ASSIGNED"))
         );
         Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
         SecurityContext context = SecurityContextHolder.createEmptyContext();
@@ -532,7 +532,7 @@ class BookingChargeControllerTest {
         when(bookingBranchResolver.isBookingAssignedTo(bookingId, staffUserId)).thenReturn(false);
 
         Map<String, Object> claims = Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "ASSIGNED"))
+                "grants", List.of(Map.of("p", "payment:create", "s", "ASSIGNED"))
         );
         Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
         SecurityContext context = SecurityContextHolder.createEmptyContext();
@@ -566,7 +566,7 @@ class BookingChargeControllerTest {
         );
 
         Jwt jwt = createJwt("ADMIN:" + staffUserId, Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "ALL"))
+                "grants", List.of(Map.of("p", "payment:create", "s", "ALL"))
         ));
 
         assertThatThrownBy(() -> controller.createCharge(cmd, jwt))
@@ -590,7 +590,7 @@ class BookingChargeControllerTest {
         );
 
         Jwt jwt = createJwt("ADMIN:" + staffUserId, Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "ALL"))
+                "grants", List.of(Map.of("p", "payment:create", "s", "ALL"))
         ));
 
         assertThatThrownBy(() -> controller.createCharge(cmd, jwt))
@@ -607,7 +607,7 @@ class BookingChargeControllerTest {
     void waiveCharge_OwnScope_OtherCreator_Throws403() {
         UUID otherStaff = UUID.randomUUID();
         Map<String, Object> claims = Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "OWN"))
+                "grants", List.of(Map.of("p", "payment:reconcile", "s", "OWN"))
         );
         Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
         SecurityContext context = SecurityContextHolder.createEmptyContext();
@@ -683,7 +683,7 @@ class BookingChargeControllerTest {
     @DisplayName("P0-V7 Data Scope: Staff có OWN scope tạo charge cho booking KHÔNG do mình sở hữu -> 403 Forbidden")
     void createCharge_StaffOwnScope_BookingNotOwnedByStaff_Throws403() {
         Map<String, Object> claims = Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "OWN"))
+                "grants", List.of(Map.of("p", "payment:create", "s", "OWN"))
         );
         Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
         SecurityContext context = SecurityContextHolder.createEmptyContext();
@@ -712,7 +712,7 @@ class BookingChargeControllerTest {
     @DisplayName("P0-V7 Data Scope: Staff có OWN scope tạo charge cho booking DO CHÍNH MÌNH sở hữu -> 201 Created")
     void createCharge_StaffOwnScope_BookingOwnedByStaff_Returns201() {
         Map<String, Object> claims = Map.of(
-                "grants", List.of(Map.of("p", "payment:write", "s", "OWN"))
+                "grants", List.of(Map.of("p", "payment:create", "s", "OWN"))
         );
         Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
         SecurityContext context = SecurityContextHolder.createEmptyContext();

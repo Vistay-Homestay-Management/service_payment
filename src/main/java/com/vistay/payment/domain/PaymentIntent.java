@@ -124,6 +124,8 @@ public class PaymentIntent {
     public UUID getId() { return id; }
     public String getIntentCode() { return intentCode; }
     public UUID getFinancePaymentRequestId() { return financePaymentRequestId; }
+    public UUID getBookingId() { return bookingId; }
+    public UUID getCustomerId() { return customerId; }
     public BigDecimal getAmount() { return amount; }
     public String getCurrency() { return currency; }
     public PaymentIntentStatus getStatus() { return status; }
