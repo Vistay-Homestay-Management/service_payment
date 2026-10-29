@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 @Service
 public class BookingChargeService {
@@ -172,8 +173,8 @@ public class BookingChargeService {
         try {
             BookingChargeResponse response = writeTxTemplate.execute(status ->
                     BookingChargeResponse.from(chargeRepository.saveAndFlush(charge)));
-            log.info("Booking charge created: chargeId={}, bookingId={}, branchId={}, actorId={}",
-                    charge.getId(), charge.getBookingId(), charge.getBranchId(), actorId);
+            log.info("Booking charge created: chargeId={}, bookingId={}, branchId={}, actorId={}, correlationId={}",
+                    charge.getId(), charge.getBookingId(), charge.getBranchId(), actorId, MDC.get("correlation_id"));
             return response;
         } catch (DataIntegrityViolationException ex) {
             // Concurrent race condition handling:
@@ -252,8 +253,8 @@ public class BookingChargeService {
                     allocationRepository.saveAndFlush(allocation);
                     return BookingChargeResponse.from(chargeRepository.saveAndFlush(txCharge));
                 });
-                log.info("Payment applied to charge: chargeId={}, allocationId={}, amount={}, actorId={}",
-                        chargeId, cmd.financeAllocationId(), cmd.paymentAmount(), actorId);
+                log.info("Payment applied to charge: chargeId={}, allocationId={}, amount={}, actorId={}, correlationId={}",
+                        chargeId, cmd.financeAllocationId(), cmd.paymentAmount(), actorId, MDC.get("correlation_id"));
                 return response;
             } catch (DataIntegrityViolationException ex) {
                 // Concurrent race condition handling on finance_allocation_id
@@ -298,7 +299,7 @@ public class BookingChargeService {
 
             return BookingChargeResponse.from(chargeRepository.saveAndFlush(charge));
         });
-        log.info("Booking charge waived: chargeId={}, amount={}, actorId={}", chargeId, cmd.waiveAmount(), actorId);
+        log.info("Booking charge waived: chargeId={}, amount={}, actorId={}, correlationId={}", chargeId, cmd.waiveAmount(), actorId, MDC.get("correlation_id"));
         return response;
     }
 
@@ -324,7 +325,7 @@ public class BookingChargeService {
 
             return BookingChargeResponse.from(chargeRepository.saveAndFlush(charge));
         });
-        log.info("Booking charge cancelled: chargeId={}, actorId={}", chargeId, actorId);
+        log.info("Booking charge cancelled: chargeId={}, voidAmount={}, actorId={}, correlationId={}", chargeId, response.voidedAmount(), actorId, MDC.get("correlation_id"));
         return response;
     }
 

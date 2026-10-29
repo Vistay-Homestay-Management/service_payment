@@ -81,6 +81,22 @@ public class BookingChargeAuthorizationService {
         return extractActorId(jwt);
     }
 
+    public String extractCorrelationId(Jwt jwt) {
+        String mdc = org.slf4j.MDC.get("correlation_id");
+        if (mdc != null && !mdc.isBlank()) {
+            return mdc;
+        }
+        if (jwt != null) {
+            for (String claim : List.of("correlation_id", "cid", "trace_id")) {
+                String val = jwt.getClaimAsString(claim);
+                if (val != null && !val.isBlank()) {
+                    return val.trim();
+                }
+            }
+        }
+        return UUID.randomUUID().toString();
+    }
+
     public List<String> extractAssignedBranches(Jwt jwt) {
         List<String> bld = jwt.getClaimAsStringList("bld");
         if (bld != null && !bld.isEmpty()) {
@@ -205,6 +221,51 @@ public class BookingChargeAuthorizationService {
                 "Access denied: Missing valid data scope for payment:read (must have ALL, BRANCH, OWN, or ASSIGNED scope)");
     }
 
+    public void assertCreateDataScope(UUID branchId, UUID bookingId, UUID actorId, Jwt jwt) {
+        if (jwt == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthenticated security context");
+        }
+        if (hasAuthority(jwt, "SCOPE_internal:finance")) {
+            return;
+        }
+
+        if (hasDataScope(jwt, "payment:write", "ALL")) {
+            return;
+        }
+
+        if (hasDataScope(jwt, "payment:write", "BRANCH")) {
+            if (branchId == null) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Access denied: Staff with BRANCH scope cannot create charges without an assigned branch");
+            }
+            List<String> assignedBranches = extractAssignedBranches(jwt);
+            if (!assignedBranches.contains(branchId.toString())) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Access denied: Staff is not authorized to modify charges for branch " + branchId);
+            }
+            return;
+        }
+
+        if (hasDataScope(jwt, "payment:write", "OWN")) {
+            if (bookingBranchResolver == null || !bookingBranchResolver.isBookingOwnedBy(bookingId, actorId)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Access denied: Staff with OWN scope cannot create charges for a booking owned by another actor");
+            }
+            return;
+        }
+
+        if (hasDataScope(jwt, "payment:write", "ASSIGNED")) {
+            if (bookingBranchResolver == null || !bookingBranchResolver.isBookingAssignedTo(bookingId, actorId)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Access denied: Staff with ASSIGNED scope is not assigned to booking " + bookingId);
+            }
+            return;
+        }
+
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                "Access denied: Missing valid write data scope (must have ALL, BRANCH, OWN, or ASSIGNED scope for payment:write)");
+    }
+
     public void assertWriteDataScope(UUID branchId, UUID bookingId, UUID createdByAdminUserId, UUID actorId, Jwt jwt) {
         if (jwt == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthenticated security context");
@@ -264,6 +325,15 @@ public class BookingChargeAuthorizationService {
 
         boolean isCustomer = hasRole(jwt, "ROLE_USER");
         if (isCustomer && !isStaffCaller()) {
+            UUID customerId = extractCustomerId(jwt);
+            if (bookingBranchResolver == null) {
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Authoritative booking resolver unavailable: fail-closed");
+            }
+            Optional<UUID> bookingCustomer = bookingBranchResolver.resolveCustomerId(bookingId);
+            if (bookingCustomer.isEmpty() || !bookingCustomer.get().equals(customerId)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Access denied: Customer cannot access bookings belonging to another customer");
+            }
             return;
         }
 
@@ -292,6 +362,10 @@ public class BookingChargeAuthorizationService {
         }
 
         if (hasDataScope(jwt, "payment:read", "OWN")) {
+            if (bookingBranchResolver == null || !bookingBranchResolver.isBookingOwnedBy(bookingId, staffId)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Access denied: Staff with OWN scope is not the owner of booking " + bookingId);
+            }
             return;
         }
 

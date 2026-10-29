@@ -9,4 +9,12 @@ public interface BookingBranchResolver {
     default boolean isBookingAssignedTo(UUID bookingId, UUID staffId) {
         return false;
     }
+
+    default boolean isBookingOwnedBy(UUID bookingId, UUID staffId) {
+        return false;
+    }
+
+    default Optional<UUID> resolveCustomerId(UUID bookingId) {
+        return Optional.empty();
+    }
 }

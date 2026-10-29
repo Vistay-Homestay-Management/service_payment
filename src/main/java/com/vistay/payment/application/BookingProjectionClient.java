@@ -13,4 +13,12 @@ public interface BookingProjectionClient {
     default boolean isBookingAssignedTo(UUID bookingId, UUID staffId) {
         return false;
     }
+
+    default boolean isBookingOwnedBy(UUID bookingId, UUID staffId) {
+        return false;
+    }
+
+    default Optional<UUID> getCustomerId(UUID bookingId) {
+        return Optional.empty();
+    }
 }

@@ -66,7 +66,7 @@ public class BookingChargeController {
                     "Authoritative booking branch resolver is not available: fail-closed");
         }
 
-        authorizationService.assertWriteDataScope(resolvedBranchId, command.bookingId(), actorId, actorId, jwt);
+        authorizationService.assertCreateDataScope(resolvedBranchId, command.bookingId(), actorId, jwt);
         BookingChargeResponse response = bookingChargeService.createCharge(command, actorId);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }

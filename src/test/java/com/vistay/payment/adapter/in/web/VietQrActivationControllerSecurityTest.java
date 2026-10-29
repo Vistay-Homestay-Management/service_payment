@@ -104,11 +104,20 @@ class VietQrActivationControllerSecurityTest {
     }
 
     @Test
-    @DisplayName("P0-04 VietQR Security: Caller without payment:activation:write or ROLE_ADMIN -> 403 Forbidden")
+    @DisplayName("P0-04 VietQR Security: Caller without payment:activation:write -> 403 Forbidden")
     void activatePlan_UnauthorizedRole_Returns403() throws Exception {
         mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
                         .with(jwt().jwt(j -> j.subject("USER:" + UUID.randomUUID()))
                                 .authorities(new SimpleGrantedAuthority("ROLE_USER"))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("P0-04 Elimination of Admin Bypass: ROLE_ADMIN without payment:activation:write -> 403 Forbidden")
+    void activatePlan_AdminWithoutActivationGrant_Returns403() throws Exception {
+        mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
+                        .with(jwt().jwt(j -> j.subject("ADMIN:" + adminUserId))
+                                .authorities(new SimpleGrantedAuthority("ROLE_ADMIN"))))
                 .andExpect(status().isForbidden());
     }
 
@@ -119,19 +128,19 @@ class VietQrActivationControllerSecurityTest {
         mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
                         .param("operatorId", spoofedOperatorId.toString())
                         .with(jwt().jwt(j -> j.subject("ADMIN:" + adminUserId))
-                                .authorities(new SimpleGrantedAuthority("ROLE_ADMIN"))))
+                                .authorities(new SimpleGrantedAuthority("SCOPE_payment:activation:write"))))
                 .andExpect(status().isForbidden());
     }
 
     @Test
-    @DisplayName("P0-04 VietQR Security: Valid admin activates plan -> Extracts actorId from JWT and succeeds 200 OK")
-    void activatePlan_ValidAdmin_Success() throws Exception {
+    @DisplayName("P0-04 VietQR Security: Valid caller with payment:activation:write activates plan -> 200 OK")
+    void activatePlan_ValidCaller_Success() throws Exception {
         when(activationPlanService.activatePlan(planId, adminUserId))
                 .thenReturn(samplePlanResponse(VietQrPlanStatus.ACTIVE));
 
         mockMvc.perform(post("/api/v1/payment/vietqr/activation-plans/" + planId + "/activate")
                         .with(jwt().jwt(j -> j.subject("ADMIN:" + adminUserId))
-                                .authorities(new SimpleGrantedAuthority("ROLE_ADMIN"))))
+                                .authorities(new SimpleGrantedAuthority("SCOPE_payment:activation:write"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
 
@@ -155,14 +164,23 @@ class VietQrActivationControllerSecurityTest {
     }
 
     @Test
-    @DisplayName("P0-04 VietQR Security: Staff with ROLE_FINANCE reads active plan -> 200 OK")
-    void getActivePlan_FinanceRole_Returns200() throws Exception {
+    @DisplayName("P0-04 Elimination of Admin Bypass: ROLE_ADMIN without read grant -> 403 Forbidden")
+    void getActivePlan_AdminWithoutReadGrant_Returns403() throws Exception {
+        mockMvc.perform(get("/api/v1/payment/vietqr/activation-plans/active")
+                        .with(jwt().jwt(j -> j.subject("ADMIN:" + adminUserId))
+                                .authorities(new SimpleGrantedAuthority("ROLE_ADMIN"))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("P0-04 VietQR Security: Caller with payment:activation:read reads active plan -> 200 OK")
+    void getActivePlan_WithReadPermission_Returns200() throws Exception {
         when(activationPlanService.getActivePlan())
                 .thenReturn(Optional.of(samplePlanResponse(VietQrPlanStatus.ACTIVE)));
 
         mockMvc.perform(get("/api/v1/payment/vietqr/activation-plans/active")
                         .with(jwt().jwt(j -> j.subject("ADMIN:" + adminUserId))
-                                .authorities(new SimpleGrantedAuthority("ROLE_FINANCE"))))
+                                .authorities(new SimpleGrantedAuthority("SCOPE_payment:activation:read"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.planCode").value("PLAN-2026-001"));
     }

@@ -29,7 +29,7 @@ public class VietQrActivationController {
     }
 
     @PostMapping
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:write', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> createPlan(
             @Valid @RequestBody CreateActivationPlanCommand command,
             @AuthenticationPrincipal Jwt jwt) {
@@ -42,7 +42,7 @@ public class VietQrActivationController {
     }
 
     @PostMapping("/{id}/uat")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:write', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> recordUatEvidence(
             @PathVariable UUID id,
             @Valid @RequestBody RecordUatEvidenceCommand command) {
@@ -50,7 +50,7 @@ public class VietQrActivationController {
     }
 
     @PostMapping("/{id}/callback")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:write', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> configureCallback(
             @PathVariable UUID id,
             @Valid @RequestBody ConfigureCallbackCommand command) {
@@ -58,7 +58,7 @@ public class VietQrActivationController {
     }
 
     @PostMapping("/{id}/submit")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:write', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> submitForApproval(
             @PathVariable UUID id,
             @Valid @RequestBody SubmitActivationPlanCommand command,
@@ -71,7 +71,7 @@ public class VietQrActivationController {
     }
 
     @PostMapping("/{id}/approve")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:write', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> approvePlan(
             @PathVariable UUID id,
             @Valid @RequestBody ApproveActivationPlanCommand command,
@@ -84,7 +84,7 @@ public class VietQrActivationController {
     }
 
     @PostMapping("/{id}/activate")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:write', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> activatePlan(
             @PathVariable UUID id,
             @RequestParam(required = false) UUID operatorId,
@@ -97,7 +97,7 @@ public class VietQrActivationController {
     }
 
     @PostMapping("/{id}/reject")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:write', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> rejectPlan(
             @PathVariable UUID id,
             @Valid @RequestBody RejectActivationPlanCommand command,
@@ -110,7 +110,7 @@ public class VietQrActivationController {
     }
 
     @PostMapping("/{id}/suspend")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:write', 'ROLE_ADMIN')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:write', 'SCOPE_payment:activation:write')")
     public ResponseEntity<VietQrActivationPlanResponse> suspendPlan(
             @PathVariable UUID id,
             @RequestParam(required = false) UUID operatorId,
@@ -124,19 +124,19 @@ public class VietQrActivationController {
     }
 
     @GetMapping("/{id}")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:read', 'SCOPE_payment:read', 'ROLE_ADMIN', 'ROLE_FINANCE')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:read', 'SCOPE_payment:activation:read', 'payment:read', 'SCOPE_payment:read')")
     public ResponseEntity<VietQrActivationPlanResponse> getPlanById(@PathVariable UUID id) {
         return ResponseEntity.ok(activationPlanService.getPlanById(id));
     }
 
     @GetMapping("/code/{planCode}")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:read', 'SCOPE_payment:read', 'ROLE_ADMIN', 'ROLE_FINANCE')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:read', 'SCOPE_payment:activation:read', 'payment:read', 'SCOPE_payment:read')")
     public ResponseEntity<VietQrActivationPlanResponse> getPlanByCode(@PathVariable String planCode) {
         return ResponseEntity.ok(activationPlanService.getPlanByCode(planCode));
     }
 
     @GetMapping("/active")
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:read', 'SCOPE_payment:read', 'ROLE_ADMIN', 'ROLE_FINANCE')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:read', 'SCOPE_payment:activation:read', 'payment:read', 'SCOPE_payment:read')")
     public ResponseEntity<VietQrActivationPlanResponse> getActivePlan() {
         return activationPlanService.getActivePlan()
                 .map(ResponseEntity::ok)
@@ -144,7 +144,7 @@ public class VietQrActivationController {
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyAuthority('SCOPE_payment:activation:read', 'SCOPE_payment:read', 'ROLE_ADMIN', 'ROLE_FINANCE')")
+    @PreAuthorize("hasAnyAuthority('payment:activation:read', 'SCOPE_payment:activation:read', 'payment:read', 'SCOPE_payment:read')")
     public ResponseEntity<List<VietQrActivationPlanResponse>> listPlans(
             @RequestParam(required = false) VietQrPlanStatus status) {
         return ResponseEntity.ok(activationPlanService.listPlans(status));

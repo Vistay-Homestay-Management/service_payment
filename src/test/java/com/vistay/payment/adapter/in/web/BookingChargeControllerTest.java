@@ -432,6 +432,7 @@ class BookingChargeControllerTest {
     @DisplayName("P0 Write Scope: Nhân viên OWN scope tạo charge hợp lệ -> 201 Created")
     void createCharge_OwnScope_Valid_Returns201() {
         when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(branchA));
+        when(bookingBranchResolver.isBookingOwnedBy(bookingId, staffUserId)).thenReturn(true);
 
         Map<String, Object> claims = Map.of(
                 "grants", List.of(Map.of("p", "payment:write", "s", "OWN"))
@@ -625,6 +626,7 @@ class BookingChargeControllerTest {
                 bookingId, new BigDecimal("500000.00"), BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, new BigDecimal("500000.00"), "VND", 1, List.of(otherCharge)
         );
+        when(bookingBranchResolver.resolveCustomerId(bookingId)).thenReturn(Optional.of(customerId));
         when(bookingChargeService.getBookingOpenBalanceSummary(bookingId)).thenReturn(summary);
 
         assertThatThrownBy(() -> controller.getBookingOpenBalance(bookingId, jwt))
@@ -633,6 +635,125 @@ class BookingChargeControllerTest {
                     ResponseStatusException rse = (ResponseStatusException) e;
                     assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
                     assertThat(rse.getReason()).contains("Cannot access booking charges belonging to another customer");
+                });
+    }
+
+    @Test
+    @DisplayName("P0-V7 Data Scope: Staff có OWN scope tạo charge cho booking KHÔNG do mình sở hữu -> 403 Forbidden")
+    void createCharge_StaffOwnScope_BookingNotOwnedByStaff_Throws403() {
+        Map<String, Object> claims = Map.of(
+                "grants", List.of(Map.of("p", "payment:write", "s", "OWN"))
+        );
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))));
+        SecurityContextHolder.setContext(context);
+
+        when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(branchA));
+        when(bookingBranchResolver.isBookingOwnedBy(bookingId, staffUserId)).thenReturn(false);
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-OWN-FAIL", financeRequestId, bookingId, branchA, customerId,
+                ChargeType.DEPOSIT, new BigDecimal("500000.00"), "VND",
+                Instant.now().plusSeconds(3600), "Cọc", "IDEM-OWN-FAIL"
+        );
+
+        assertThatThrownBy(() -> controller.createCharge(cmd, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    ResponseStatusException rse = (ResponseStatusException) e;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(rse.getReason()).contains("Staff with OWN scope cannot create charges for a booking owned by another actor");
+                });
+    }
+
+    @Test
+    @DisplayName("P0-V7 Data Scope: Staff có OWN scope tạo charge cho booking DO CHÍNH MÌNH sở hữu -> 201 Created")
+    void createCharge_StaffOwnScope_BookingOwnedByStaff_Returns201() {
+        Map<String, Object> claims = Map.of(
+                "grants", List.of(Map.of("p", "payment:write", "s", "OWN"))
+        );
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))));
+        SecurityContextHolder.setContext(context);
+
+        when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(branchA));
+        when(bookingBranchResolver.isBookingOwnedBy(bookingId, staffUserId)).thenReturn(true);
+        when(bookingChargeService.createCharge(any(), eq(staffUserId)))
+                .thenReturn(createSampleChargeResponse(customerId, branchA, staffUserId));
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-OWN-OK", financeRequestId, bookingId, branchA, customerId,
+                ChargeType.DEPOSIT, new BigDecimal("500000.00"), "VND",
+                Instant.now().plusSeconds(3600), "Cọc", "IDEM-OWN-OK"
+        );
+
+        ResponseEntity<BookingChargeResponse> response = controller.createCharge(cmd, jwt);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("P1-V7 Empty Booking Projection: Khách hàng truy cập booking của người khác dù chưa có charge nào -> 403 Forbidden")
+    void getBookingOpenBalance_CustomerNotOwningBooking_EmptyCharges_Throws403() {
+        UUID otherCustomer = UUID.randomUUID();
+        Jwt jwt = createJwt("CUSTOMER:" + customerId, null);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+        SecurityContextHolder.setContext(context);
+
+        when(bookingBranchResolver.resolveCustomerId(bookingId)).thenReturn(Optional.of(otherCustomer));
+
+        assertThatThrownBy(() -> controller.getBookingOpenBalance(bookingId, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    ResponseStatusException rse = (ResponseStatusException) e;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(rse.getReason()).contains("Customer cannot access bookings belonging to another customer");
+                });
+    }
+
+    @Test
+    @DisplayName("P1-V7 Empty Booking Projection: Khách hàng truy vấn charges của booking người khác -> 403 Forbidden")
+    void getChargesByBooking_CustomerNotOwningBooking_EmptyCharges_Throws403() {
+        UUID otherCustomer = UUID.randomUUID();
+        Jwt jwt = createJwt("CUSTOMER:" + customerId, null);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+        SecurityContextHolder.setContext(context);
+
+        when(bookingBranchResolver.resolveCustomerId(bookingId)).thenReturn(Optional.of(otherCustomer));
+
+        assertThatThrownBy(() -> controller.getChargesByBooking(bookingId, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    ResponseStatusException rse = (ResponseStatusException) e;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(rse.getReason()).contains("Customer cannot access bookings belonging to another customer");
+                });
+    }
+
+    @Test
+    @DisplayName("P1-V7 Empty Booking Projection: Staff OWN scope truy cập booking không thuộc mình sở hữu -> 403 Forbidden")
+    void getBookingOpenBalance_StaffOwnScope_BookingNotOwned_Throws403() {
+        Map<String, Object> claims = Map.of(
+                "grants", List.of(Map.of("p", "payment:read", "s", "OWN"))
+        );
+        Jwt jwt = createJwt("ADMIN:" + staffUserId, claims);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))));
+        SecurityContextHolder.setContext(context);
+
+        when(bookingBranchResolver.isBookingOwnedBy(bookingId, staffUserId)).thenReturn(false);
+
+        assertThatThrownBy(() -> controller.getBookingOpenBalance(bookingId, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> {
+                    ResponseStatusException rse = (ResponseStatusException) e;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+                    assertThat(rse.getReason()).contains("Staff with OWN scope is not the owner of booking");
                 });
     }
 }

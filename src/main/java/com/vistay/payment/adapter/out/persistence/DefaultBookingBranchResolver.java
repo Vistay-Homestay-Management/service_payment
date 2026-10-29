@@ -41,4 +41,20 @@ public class DefaultBookingBranchResolver implements BookingBranchResolver {
         }
         return bookingProjectionClient.isBookingAssignedTo(bookingId, staffId);
     }
+
+    @Override
+    public boolean isBookingOwnedBy(UUID bookingId, UUID staffId) {
+        if (bookingProjectionClient == null) {
+            return false;
+        }
+        return bookingProjectionClient.isBookingOwnedBy(bookingId, staffId);
+    }
+
+    @Override
+    public Optional<UUID> resolveCustomerId(UUID bookingId) {
+        if (bookingProjectionClient == null) {
+            return Optional.empty();
+        }
+        return bookingProjectionClient.getCustomerId(bookingId);
+    }
 }
