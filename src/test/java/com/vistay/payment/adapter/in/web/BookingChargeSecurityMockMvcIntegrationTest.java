@@ -1,5 +1,6 @@
 package com.vistay.payment.adapter.in.web;
 
+import com.vistay.payment.application.BookingBranchResolver;
 import com.vistay.payment.application.BookingChargeResponse;
 import com.vistay.payment.application.BookingChargeService;
 import com.vistay.payment.domain.ChargeStatus;
@@ -33,6 +34,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -48,6 +50,9 @@ class BookingChargeSecurityMockMvcIntegrationTest {
 
     @Mock
     private BookingChargeService bookingChargeService;
+
+    @Mock
+    private BookingBranchResolver bookingBranchResolver;
 
     @InjectMocks
     private BookingChargeController controller;
@@ -137,6 +142,8 @@ class BookingChargeSecurityMockMvcIntegrationTest {
             }
         """.formatted(financeRequestId, bookingId, branchA, customerId, Instant.now().plusSeconds(3600));
 
+        when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(branchA));
+
         mockMvc.perform(post("/api/v1/payment/booking-charges")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json)
@@ -168,6 +175,7 @@ class BookingChargeSecurityMockMvcIntegrationTest {
             }
         """.formatted(financeRequestId, bookingId, branchA, customerId, Instant.now().plusSeconds(3600));
 
+        when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(branchA));
         when(bookingChargeService.createCharge(any(), eq(staffUserId)))
                 .thenReturn(sampleResponse(customerId, branchA, staffUserId));
 

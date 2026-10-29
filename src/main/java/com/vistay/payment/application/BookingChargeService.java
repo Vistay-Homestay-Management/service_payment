@@ -1,8 +1,10 @@
 package com.vistay.payment.application;
 
 import com.vistay.payment.domain.*;
+import jakarta.persistence.OptimisticLockException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -43,6 +45,7 @@ public class BookingChargeService {
         this(chargeRepository, allocationRepository, adjustmentRepository, financeClient, financeAllocationClient, transactionManager, null);
     }
 
+    @Autowired
     public BookingChargeService(BookingChargeRepository chargeRepository,
                                 BookingChargeAllocationRepository allocationRepository,
                                 BookingChargeAdjustmentRepository adjustmentRepository,
@@ -179,79 +182,90 @@ public class BookingChargeService {
     }
 
     public BookingChargeResponse applyPayment(UUID chargeId, ApplyPaymentToChargeCommand cmd, UUID actorId) {
-        // 1. Anti-replay and deduplication pre-check
-        Optional<BookingChargeAllocation> existingAlloc = readTxTemplate.execute(status ->
-                allocationRepository.findByFinanceAllocationId(cmd.financeAllocationId()));
-        if (existingAlloc != null && existingAlloc.isPresent()) {
-            BookingChargeAllocation alloc = existingAlloc.get();
-            if (alloc.getChargeId().equals(chargeId)
-                    && alloc.getPaymentTransactionId().equals(cmd.paymentTransactionId())
-                    && alloc.getAllocatedAmount().compareTo(cmd.paymentAmount()) == 0) {
-                // Idempotent replay: exact same allocation re-sent
-                return BookingChargeResponse.from(findChargeOrThrow(chargeId));
-            }
-            throw new IllegalStateException("Duplicate finance allocation ID already recorded: " + cmd.financeAllocationId());
-        }
-
-        BookingCharge charge = findChargeOrThrow(chargeId);
-
-        // 2. Strict Finance Allocation SSOT verification (Fail-closed)
-        if (financeAllocationClient == null) {
-            throw new IllegalStateException("Finance allocation client is required for SSOT verification: fail-closed");
-        }
-
-        FinanceAllocationRecord record = financeAllocationClient.getAllocation(cmd.financeAllocationId());
-        if (record == null) {
-            throw new IllegalArgumentException("Finance allocation record not found: " + cmd.financeAllocationId());
-        }
-        if (!record.financePaymentRequestId().equals(charge.getFinancePaymentRequestId())) {
-            throw new IllegalArgumentException("Finance allocation does not match collection order payment request");
-        }
-        if (!record.paymentTransactionId().equals(cmd.paymentTransactionId())) {
-            throw new IllegalArgumentException("Payment transaction ID mismatch with verified Finance allocation");
-        }
-        if (cmd.paymentAmount().compareTo(record.allocatedAmount()) != 0) {
-            throw new IllegalArgumentException("Payment amount (" + cmd.paymentAmount() + ") does not match Finance allocation amount (" + record.allocatedAmount() + ")");
-        }
-        if (!charge.getCurrency().equalsIgnoreCase(record.currency())) {
-            throw new IllegalArgumentException("Currency mismatch with verified Finance allocation");
-        }
-        if (!"CONFIRMED".equalsIgnoreCase(record.status())) {
-            throw new IllegalStateException("Finance allocation is not in CONFIRMED status: " + record.status());
-        }
-
-        charge.applyPayment(cmd.paymentAmount(), cmd.paymentTransactionId());
-
-        BookingChargeAllocation allocation = new BookingChargeAllocation(
-                charge.getId(),
-                cmd.financeAllocationId(),
-                cmd.paymentTransactionId(),
-                cmd.paymentAmount(),
-                charge.getCurrency(),
-                actorId,
-                cmd.note()
-        );
-
-        try {
-            return writeTxTemplate.execute(status -> {
-                allocationRepository.saveAndFlush(allocation);
-                return BookingChargeResponse.from(chargeRepository.saveAndFlush(charge));
-            });
-        } catch (DataIntegrityViolationException ex) {
-            // Concurrent race condition handling on finance_allocation_id
-            Optional<BookingChargeAllocation> raceAlloc = readTxTemplate.execute(status ->
+        int maxRetries = 3;
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            // 1. Anti-replay and deduplication pre-check
+            Optional<BookingChargeAllocation> existingAlloc = readTxTemplate.execute(status ->
                     allocationRepository.findByFinanceAllocationId(cmd.financeAllocationId()));
-            if (raceAlloc != null && raceAlloc.isPresent()) {
-                BookingChargeAllocation alloc = raceAlloc.get();
+            if (existingAlloc != null && existingAlloc.isPresent()) {
+                BookingChargeAllocation alloc = existingAlloc.get();
                 if (alloc.getChargeId().equals(chargeId)
                         && alloc.getPaymentTransactionId().equals(cmd.paymentTransactionId())
                         && alloc.getAllocatedAmount().compareTo(cmd.paymentAmount()) == 0) {
+                    // Idempotent replay: exact same allocation re-sent
                     return BookingChargeResponse.from(findChargeOrThrow(chargeId));
                 }
-                throw new IllegalStateException("Duplicate finance allocation ID under race condition: " + cmd.financeAllocationId());
+                throw new IllegalStateException("Duplicate finance allocation ID already recorded: " + cmd.financeAllocationId());
             }
-            throw ex;
+
+            BookingCharge charge = findChargeOrThrow(chargeId);
+
+            // 2. Strict Finance Allocation SSOT verification (Fail-closed)
+            if (financeAllocationClient == null) {
+                throw new IllegalStateException("Finance allocation client is required for SSOT verification: fail-closed");
+            }
+
+            FinanceAllocationRecord record = financeAllocationClient.getAllocation(cmd.financeAllocationId());
+            if (record == null) {
+                throw new IllegalArgumentException("Finance allocation record not found: " + cmd.financeAllocationId());
+            }
+            if (!record.financePaymentRequestId().equals(charge.getFinancePaymentRequestId())) {
+                throw new IllegalArgumentException("Finance allocation does not match collection order payment request");
+            }
+            if (!record.paymentTransactionId().equals(cmd.paymentTransactionId())) {
+                throw new IllegalArgumentException("Payment transaction ID mismatch with verified Finance allocation");
+            }
+            if (cmd.paymentAmount().compareTo(record.allocatedAmount()) != 0) {
+                throw new IllegalArgumentException("Payment amount (" + cmd.paymentAmount() + ") does not match Finance allocation amount (" + record.allocatedAmount() + ")");
+            }
+            if (!charge.getCurrency().equalsIgnoreCase(record.currency())) {
+                throw new IllegalArgumentException("Currency mismatch with verified Finance allocation");
+            }
+            if (!"CONFIRMED".equalsIgnoreCase(record.status())) {
+                throw new IllegalStateException("Finance allocation is not in CONFIRMED status: " + record.status());
+            }
+
+            try {
+                return writeTxTemplate.execute(status -> {
+                    // 3. Read fresh charge inside write transaction boundary to avoid lost update
+                    BookingCharge txCharge = findChargeOrThrow(chargeId);
+                    txCharge.applyPayment(cmd.paymentAmount(), cmd.paymentTransactionId());
+
+                    BookingChargeAllocation allocation = new BookingChargeAllocation(
+                            txCharge.getId(),
+                            cmd.financeAllocationId(),
+                            cmd.paymentTransactionId(),
+                            cmd.paymentAmount(),
+                            txCharge.getCurrency(),
+                            actorId,
+                            cmd.note()
+                    );
+
+                    allocationRepository.saveAndFlush(allocation);
+                    return BookingChargeResponse.from(chargeRepository.saveAndFlush(txCharge));
+                });
+            } catch (DataIntegrityViolationException ex) {
+                // Concurrent race condition handling on finance_allocation_id
+                Optional<BookingChargeAllocation> raceAlloc = readTxTemplate.execute(status ->
+                        allocationRepository.findByFinanceAllocationId(cmd.financeAllocationId()));
+                if (raceAlloc != null && raceAlloc.isPresent()) {
+                    BookingChargeAllocation alloc = raceAlloc.get();
+                    if (alloc.getChargeId().equals(chargeId)
+                            && alloc.getPaymentTransactionId().equals(cmd.paymentTransactionId())
+                            && alloc.getAllocatedAmount().compareTo(cmd.paymentAmount()) == 0) {
+                        return BookingChargeResponse.from(findChargeOrThrow(chargeId));
+                    }
+                    throw new IllegalStateException("Duplicate finance allocation ID under race condition: " + cmd.financeAllocationId());
+                }
+                throw ex;
+            } catch (ObjectOptimisticLockingFailureException | OptimisticLockException ex) {
+                if (attempt == maxRetries) {
+                    throw ex;
+                }
+                // Refresh entity in clean transaction and retry
+            }
         }
+        throw new IllegalStateException("Failed to apply payment after max retries due to concurrent optimistic locking");
     }
 
     public BookingChargeResponse waiveCharge(UUID chargeId, WaiveBookingChargeCommand cmd, UUID actorId) {

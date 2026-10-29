@@ -1,36 +1,44 @@
 package com.vistay.payment.adapter.out.persistence;
 
 import com.vistay.payment.application.BookingBranchResolver;
-import com.vistay.payment.domain.BookingCharge;
-import com.vistay.payment.domain.BookingChargeRepository;
+import com.vistay.payment.application.BookingProjectionClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * Default implementation of BookingBranchResolver.
+ * Resolves branch ID and assignment authoritatively from BookingProjectionClient (upstream booking service).
+ * Fails closed if the external client is unavailable or if booking does not exist.
+ * Local booking charge projections are NEVER treated as authoritative for branch ownership.
+ */
 @Component
-@ConditionalOnMissingBean(BookingBranchResolver.class)
 public class DefaultBookingBranchResolver implements BookingBranchResolver {
 
-    private final BookingChargeRepository chargeRepository;
+    private final BookingProjectionClient bookingProjectionClient;
 
-    public DefaultBookingBranchResolver(BookingChargeRepository chargeRepository) {
-        this.chargeRepository = chargeRepository;
+    @Autowired
+    public DefaultBookingBranchResolver(
+            @Autowired(required = false) BookingProjectionClient bookingProjectionClient) {
+        this.bookingProjectionClient = bookingProjectionClient;
     }
 
     @Override
     public Optional<UUID> resolveBranchId(UUID bookingId) {
-        if (bookingId == null) {
+        if (bookingProjectionClient == null) {
             return Optional.empty();
         }
-        List<BookingCharge> charges = chargeRepository.findByBookingId(bookingId);
-        return charges.stream()
-                .map(BookingCharge::getBranchId)
-                .filter(Objects::nonNull)
-                .findFirst();
+        return bookingProjectionClient.getBranchId(bookingId);
+    }
+
+    @Override
+    public boolean isBookingAssignedTo(UUID bookingId, UUID staffId) {
+        if (bookingProjectionClient == null) {
+            return false;
+        }
+        return bookingProjectionClient.isBookingAssignedTo(bookingId, staffId);
     }
 }
-

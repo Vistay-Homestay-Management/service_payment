@@ -415,4 +415,129 @@ class PostgresMigrationAndConcurrencyIntegrationTest {
             }
         }
     }
+
+    @Test
+    @Order(7)
+    @DisplayName("Concurrent distinct allocations on same BookingCharge: Optimistic locking version retry prevents lost updates")
+    void concurrentDistinctAllocations_optimisticLockingRetry_preventsLostUpdates() throws Exception {
+        UUID allocId1 = UUID.randomUUID();
+        UUID allocId2 = UUID.randomUUID();
+        BigDecimal amount1 = new BigDecimal("150000.0000");
+        BigDecimal amount2 = new BigDecimal("250000.0000");
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch readyLatch = new CountDownLatch(2);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        AtomicInteger retryCount = new AtomicInteger(0);
+
+        List<Future<?>> futures = new ArrayList<>();
+
+        // Helper lambda for optimistic update with retry
+        java.util.function.BiConsumer<UUID, BigDecimal> applyWithRetry = (allocId, amount) -> {
+            readyLatch.countDown();
+            try {
+                startLatch.await();
+                int maxRetries = 5;
+                for (int attempt = 1; attempt <= maxRetries; attempt++) {
+                    try (Connection conn = createConnection(null)) {
+                        conn.setAutoCommit(false);
+                        try (Statement st = conn.createStatement()) {
+                            st.execute("SET search_path TO app, extensions, public");
+                        }
+
+                        // 1. Read current version and balance
+                        long currentVersion;
+                        try (PreparedStatement readPs = conn.prepareStatement(
+                                "SELECT version FROM booking_charges WHERE id = ?")) {
+                            readPs.setObject(1, chargeId1);
+                            try (java.sql.ResultSet rs = readPs.executeQuery()) {
+                                if (!rs.next()) throw new IllegalStateException("Charge not found");
+                                currentVersion = rs.getLong(1);
+                            }
+                        }
+
+                        // 2. Insert allocation
+                        String insertAlloc = """
+                            INSERT INTO booking_charge_allocations (
+                                id, charge_id, finance_allocation_id, payment_transaction_id,
+                                allocated_amount, currency, note
+                            ) VALUES (?, ?, ?, ?, ?, 'VND', 'Optimistic race test')
+                            """;
+                        try (PreparedStatement insPs = conn.prepareStatement(insertAlloc)) {
+                            insPs.setObject(1, UUID.randomUUID());
+                            insPs.setObject(2, chargeId1);
+                            insPs.setObject(3, allocId);
+                            insPs.setObject(4, UUID.randomUUID());
+                            insPs.setBigDecimal(5, amount);
+                            insPs.executeUpdate();
+                        }
+
+                        // 3. Optimistic update charge with version check
+                        String updateCharge = """
+                            UPDATE booking_charges
+                            SET paid_amount = paid_amount + ?,
+                                outstanding_balance = outstanding_balance - ?,
+                                version = version + 1,
+                                updated_at = now()
+                            WHERE id = ? AND version = ?
+                            """;
+                        int rowsUpdated;
+                        try (PreparedStatement updPs = conn.prepareStatement(updateCharge)) {
+                            updPs.setBigDecimal(1, amount);
+                            updPs.setBigDecimal(2, amount);
+                            updPs.setObject(3, chargeId1);
+                            updPs.setLong(4, currentVersion);
+                            rowsUpdated = updPs.executeUpdate();
+                        }
+
+                        if (rowsUpdated == 1) {
+                            conn.commit();
+                            return;
+                        } else {
+                            conn.rollback();
+                            retryCount.incrementAndGet();
+                            Thread.sleep(15);
+                        }
+                    }
+                }
+                throw new IllegalStateException("Failed after max optimistic retries");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        };
+
+        futures.add(executor.submit(() -> applyWithRetry.accept(allocId1, amount1)));
+        futures.add(executor.submit(() -> applyWithRetry.accept(allocId2, amount2)));
+
+        readyLatch.await(5, TimeUnit.SECONDS);
+        startLatch.countDown();
+        for (Future<?> f : futures) {
+            f.get(10, TimeUnit.SECONDS);
+        }
+        executor.shutdown();
+
+        // Verify final charge state has both payments applied and version incremented twice
+        try (Connection conn = createConnection(null)) {
+            conn.setAutoCommit(true);
+            try (Statement st = conn.createStatement()) {
+                st.execute("SET search_path TO app, extensions, public");
+            }
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT paid_amount, outstanding_balance, version FROM booking_charges WHERE id = ?")) {
+                ps.setObject(1, chargeId1);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    assertThat(rs.next()).isTrue();
+                    BigDecimal paid = rs.getBigDecimal("paid_amount");
+                    BigDecimal balance = rs.getBigDecimal("outstanding_balance");
+                    long version = rs.getLong("version");
+
+                    // Initial paid was 0; plus 150,000 + 250,000 = 400,000
+                    assertThat(paid).isEqualByComparingTo("400000.0000");
+                    // Initial balance was 1,000,000; minus 150,000 - 250,000 = 600,000
+                    assertThat(balance).isEqualByComparingTo("600000.0000");
+                    assertThat(version).isGreaterThanOrEqualTo(2);
+                }
+            }
+        }
+    }
 }
