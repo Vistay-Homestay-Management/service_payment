@@ -1,6 +1,7 @@
 package com.vistay.payment.adapter.in.web;
 
 import com.vistay.payment.application.BookingBranchResolver;
+import com.vistay.payment.application.BookingChargeAuthorizationService;
 import com.vistay.payment.application.BookingChargeResponse;
 import com.vistay.payment.application.BookingChargeService;
 import com.vistay.payment.domain.ChargeStatus;
@@ -54,7 +55,7 @@ class BookingChargeSecurityMockMvcIntegrationTest {
     @Mock
     private BookingBranchResolver bookingBranchResolver;
 
-    @InjectMocks
+    private BookingChargeAuthorizationService authorizationService;
     private BookingChargeController controller;
 
     private MockMvc mockMvc;
@@ -69,6 +70,8 @@ class BookingChargeSecurityMockMvcIntegrationTest {
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
+        authorizationService = new BookingChargeAuthorizationService(bookingBranchResolver);
+        controller = new BookingChargeController(bookingChargeService, bookingBranchResolver, authorizationService);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setCustomArgumentResolvers(new HandlerMethodArgumentResolver() {
                     @Override

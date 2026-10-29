@@ -1,6 +1,7 @@
 package com.vistay.payment.adapter.in.web;
 
 import com.vistay.payment.application.BookingBranchResolver;
+import com.vistay.payment.application.BookingChargeAuthorizationService;
 import com.vistay.payment.application.BookingChargeResponse;
 import com.vistay.payment.application.BookingChargeService;
 import com.vistay.payment.config.SecurityConfig;
@@ -25,6 +26,7 @@ import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -42,7 +44,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
     classes = {
         BookingChargeSecurityWebMvcTest.TestWebConfig.class,
         BookingChargeController.class,
-        SecurityConfig.class
+        SecurityConfig.class,
+        BookingChargeAuthorizationService.class
     },
     properties = {
         "spring.main.banner-mode=off",
@@ -55,7 +58,7 @@ class BookingChargeSecurityWebMvcTest {
 
     @Configuration
     @EnableWebMvc
-    @Import({BookingChargeController.class, SecurityConfig.class})
+    @Import({BookingChargeController.class, SecurityConfig.class, BookingChargeAuthorizationService.class})
     static class TestWebConfig {}
 
     @Autowired
@@ -198,7 +201,7 @@ class BookingChargeSecurityWebMvcTest {
                         .with(jwt()
                                 .jwt(builder -> builder
                                         .subject("STAFF:" + staffUserId)
-                                        .claim("data_scope", "BRANCH")
+                                        .claim("grants", List.of(Map.of("p", "payment:write", "s", "BRANCH")))
                                         .claim("bld", List.of(branchA.toString())))
                                 .authorities(new SimpleGrantedAuthority("SCOPE_payment:write"),
                                              new SimpleGrantedAuthority("ROLE_RECEPTIONIST")))
@@ -216,7 +219,7 @@ class BookingChargeSecurityWebMvcTest {
                         .with(jwt()
                                 .jwt(builder -> builder
                                         .subject("STAFF:" + staffUserId)
-                                        .claim("data_scope", "BRANCH")
+                                        .claim("grants", List.of(Map.of("p", "payment:read", "s", "BRANCH")))
                                         .claim("bld", List.of(branchA.toString())))
                                 .authorities(new SimpleGrantedAuthority("SCOPE_payment:read"),
                                              new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))))
@@ -232,7 +235,7 @@ class BookingChargeSecurityWebMvcTest {
                         .with(jwt()
                                 .jwt(builder -> builder
                                         .subject("STAFF:" + staffUserId)
-                                        .claim("data_scope", "BRANCH")
+                                        .claim("grants", List.of(Map.of("p", "payment:read", "s", "BRANCH")))
                                         .claim("bld", List.of(branchA.toString())))
                                 .authorities(new SimpleGrantedAuthority("SCOPE_payment:read"),
                                              new SimpleGrantedAuthority("ROLE_RECEPTIONIST"))))

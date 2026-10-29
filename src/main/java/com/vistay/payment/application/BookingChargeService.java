@@ -15,9 +15,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class BookingChargeService {
+
+    private static final Logger log = LoggerFactory.getLogger(BookingChargeService.class);
 
     private final BookingChargeRepository chargeRepository;
     private final BookingChargeAllocationRepository allocationRepository;
@@ -135,19 +139,20 @@ public class BookingChargeService {
                 ? instruction.currency()
                 : cmd.currency();
 
-        // 3. Authoritative Branch Resolution and Verification
-        UUID effectiveBranchId = cmd.branchId();
-        if (bookingBranchResolver != null) {
-            Optional<UUID> authoritativeBranch = bookingBranchResolver.resolveBranchId(cmd.bookingId());
-            if (authoritativeBranch.isPresent()) {
-                UUID verifiedBranchId = authoritativeBranch.get();
-                if (cmd.branchId() != null && !cmd.branchId().equals(verifiedBranchId)) {
-                    throw new IllegalArgumentException("Requested branch ID (" + cmd.branchId()
-                            + ") conflicts with authoritative booking branch (" + verifiedBranchId + ")");
-                }
-                effectiveBranchId = verifiedBranchId;
-            }
+        // 3. Authoritative Branch Resolution and Verification (Fail-closed)
+        if (bookingBranchResolver == null) {
+            throw new IllegalStateException("Authoritative BookingBranchResolver is required: fail-closed");
         }
+        Optional<UUID> authoritativeBranch = bookingBranchResolver.resolveBranchId(cmd.bookingId());
+        if (authoritativeBranch.isEmpty()) {
+            throw new IllegalArgumentException("Authoritative booking branch could not be resolved for booking: " + cmd.bookingId());
+        }
+        UUID verifiedBranchId = authoritativeBranch.get();
+        if (cmd.branchId() != null && !cmd.branchId().equals(verifiedBranchId)) {
+            throw new IllegalArgumentException("Requested branch ID (" + cmd.branchId()
+                    + ") conflicts with authoritative booking branch (" + verifiedBranchId + ")");
+        }
+        UUID effectiveBranchId = verifiedBranchId;
 
         BookingCharge charge = new BookingCharge(
                 cmd.chargeCode(),
@@ -165,8 +170,11 @@ public class BookingChargeService {
         );
 
         try {
-            return writeTxTemplate.execute(status ->
+            BookingChargeResponse response = writeTxTemplate.execute(status ->
                     BookingChargeResponse.from(chargeRepository.saveAndFlush(charge)));
+            log.info("Booking charge created: chargeId={}, bookingId={}, branchId={}, actorId={}",
+                    charge.getId(), charge.getBookingId(), charge.getBranchId(), actorId);
+            return response;
         } catch (DataIntegrityViolationException ex) {
             // Concurrent race condition handling:
             // Write transaction has rolled back and closed. Query winner in clean read transaction.
@@ -226,9 +234,9 @@ public class BookingChargeService {
             }
 
             try {
-                return writeTxTemplate.execute(status -> {
+                BookingChargeResponse response = writeTxTemplate.execute(status -> {
                     // 3. Read fresh charge inside write transaction boundary to avoid lost update
-                    BookingCharge txCharge = findChargeOrThrow(chargeId);
+                    BookingCharge txCharge = loadCharge(chargeId);
                     txCharge.applyPayment(cmd.paymentAmount(), cmd.paymentTransactionId());
 
                     BookingChargeAllocation allocation = new BookingChargeAllocation(
@@ -244,6 +252,9 @@ public class BookingChargeService {
                     allocationRepository.saveAndFlush(allocation);
                     return BookingChargeResponse.from(chargeRepository.saveAndFlush(txCharge));
                 });
+                log.info("Payment applied to charge: chargeId={}, allocationId={}, amount={}, actorId={}",
+                        chargeId, cmd.financeAllocationId(), cmd.paymentAmount(), actorId);
+                return response;
             } catch (DataIntegrityViolationException ex) {
                 // Concurrent race condition handling on finance_allocation_id
                 Optional<BookingChargeAllocation> raceAlloc = readTxTemplate.execute(status ->
@@ -272,8 +283,8 @@ public class BookingChargeService {
         if (actorId == null) {
             throw new SecurityException("Authenticated approver admin user ID is required");
         }
-        return writeTxTemplate.execute(status -> {
-            BookingCharge charge = findChargeOrThrow(chargeId);
+        BookingChargeResponse response = writeTxTemplate.execute(status -> {
+            BookingCharge charge = loadCharge(chargeId);
             charge.waive(cmd.waiveAmount(), actorId, cmd.reason());
 
             BookingChargeAdjustment adjustment = new BookingChargeAdjustment(
@@ -287,14 +298,16 @@ public class BookingChargeService {
 
             return BookingChargeResponse.from(chargeRepository.saveAndFlush(charge));
         });
+        log.info("Booking charge waived: chargeId={}, amount={}, actorId={}", chargeId, cmd.waiveAmount(), actorId);
+        return response;
     }
 
     public BookingChargeResponse cancelCharge(UUID chargeId, CancelBookingChargeCommand cmd, UUID actorId) {
         if (actorId == null) {
             throw new SecurityException("Authenticated actor ID is required to cancel charge");
         }
-        return writeTxTemplate.execute(status -> {
-            BookingCharge charge = findChargeOrThrow(chargeId);
+        BookingChargeResponse response = writeTxTemplate.execute(status -> {
+            BookingCharge charge = loadCharge(chargeId);
             BigDecimal voidAmount = charge.getOutstandingBalance();
             charge.cancel(actorId, cmd.reason());
 
@@ -311,6 +324,8 @@ public class BookingChargeService {
 
             return BookingChargeResponse.from(chargeRepository.saveAndFlush(charge));
         });
+        log.info("Booking charge cancelled: chargeId={}, actorId={}", chargeId, actorId);
+        return response;
     }
 
     public BookingChargeResponse getChargeById(UUID id) {
@@ -345,6 +360,9 @@ public class BookingChargeService {
             Set<String> currencies = new HashSet<>();
 
             for (BookingCharge c : charges) {
+                if (!c.getBookingId().equals(bookingId)) {
+                    throw new IllegalStateException("Cross-booking data corruption detected in charge query for booking " + bookingId);
+                }
                 currencies.add(c.getCurrency());
                 if (currency == null) {
                     currency = c.getCurrency();
@@ -390,6 +408,11 @@ public class BookingChargeService {
             throw new NoSuchElementException("Booking charge not found with id: " + id);
         }
         return found.get();
+    }
+
+    private BookingCharge loadCharge(UUID id) {
+        return chargeRepository.findById(id)
+                .orElseThrow(() -> new NoSuchElementException("Booking charge not found with id: " + id));
     }
 
     private void verifyCreatePayloadMatches(BookingCharge existing, CreateBookingChargeCommand cmd) {

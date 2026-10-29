@@ -63,6 +63,7 @@ class BookingChargeServiceTest {
                 null,
                 bookingBranchResolver
         );
+        lenient().when(bookingBranchResolver.resolveBranchId(any())).thenReturn(Optional.of(branchId));
     }
 
     private FinancePaymentInstruction createValidInstruction() {
@@ -808,5 +809,50 @@ class BookingChargeServiceTest {
 
         assertThat(response).isNotNull();
         assertThat(response.branchId()).isEqualTo(authoritativeBranch);
+    }
+
+    @Test
+    @DisplayName("P0 Branch Authority: Thiếu BookingBranchResolver phải fail-closed ném IllegalStateException")
+    void createCharge_NullResolver_ThrowsIllegalStateException() {
+        BookingChargeService serviceWithoutResolver = new BookingChargeService(
+                chargeRepository, allocationRepository, adjustmentRepository, financeClient, financeAllocationClient, null, null
+        );
+
+        FinancePaymentInstruction instruction = createValidInstruction();
+        when(financeClient.get(financeRequestId)).thenReturn(instruction);
+        when(chargeRepository.findByIdempotencyKey("IDEM-FAIL")).thenReturn(Optional.empty());
+        when(chargeRepository.existsByChargeCode("CHG-FAIL")).thenReturn(false);
+        when(chargeRepository.existsByFinancePaymentRequestId(financeRequestId)).thenReturn(false);
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-FAIL", financeRequestId, bookingId, branchId, customerId,
+                ChargeType.DEPOSIT, new BigDecimal("500000.00"), "VND",
+                Instant.now().plus(24, ChronoUnit.HOURS), "Cọc", "IDEM-FAIL"
+        );
+
+        assertThatThrownBy(() -> serviceWithoutResolver.createCharge(cmd, adminUserId))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Authoritative BookingBranchResolver is required: fail-closed");
+    }
+
+    @Test
+    @DisplayName("P0 Branch Authority: Resolver không tìm thấy branch cho booking -> ném IllegalArgumentException")
+    void createCharge_UnresolvedBranch_ThrowsIllegalArgumentException() {
+        FinancePaymentInstruction instruction = createValidInstruction();
+        when(financeClient.get(financeRequestId)).thenReturn(instruction);
+        when(chargeRepository.findByIdempotencyKey("IDEM-NOBRANCH")).thenReturn(Optional.empty());
+        when(chargeRepository.existsByChargeCode("CHG-NOBRANCH")).thenReturn(false);
+        when(chargeRepository.existsByFinancePaymentRequestId(financeRequestId)).thenReturn(false);
+        when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.empty());
+
+        CreateBookingChargeCommand cmd = new CreateBookingChargeCommand(
+                "CHG-NOBRANCH", financeRequestId, bookingId, branchId, customerId,
+                ChargeType.DEPOSIT, new BigDecimal("500000.00"), "VND",
+                Instant.now().plus(24, ChronoUnit.HOURS), "Cọc", "IDEM-NOBRANCH"
+        );
+
+        assertThatThrownBy(() -> service.createCharge(cmd, adminUserId))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Authoritative booking branch could not be resolved");
     }
 }

@@ -33,7 +33,9 @@ public class SecurityConfig {
         @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}") String issuer,
         @Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}") String jwkSetUri,
         @Value("${vistay.security.audience}") String audience) {
-        var decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        var decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri)
+            .jwsAlgorithm(org.springframework.security.oauth2.jose.jws.SignatureAlgorithm.RS256)
+            .build();
         OAuth2TokenValidator<Jwt> withIssuer = JwtValidators.createDefaultWithIssuer(issuer);
         OAuth2TokenValidator<Jwt> withAudience = token -> token.getAudience().contains(audience)
             ? OAuth2TokenValidatorResult.success()

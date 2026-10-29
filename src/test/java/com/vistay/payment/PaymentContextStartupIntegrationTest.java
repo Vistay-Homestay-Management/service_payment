@@ -3,6 +3,7 @@ package com.vistay.payment;
 import com.vistay.payment.adapter.in.web.BookingChargeController;
 import com.vistay.payment.adapter.out.persistence.DefaultBookingBranchResolver;
 import com.vistay.payment.application.BookingBranchResolver;
+import com.vistay.payment.application.BookingChargeAuthorizationService;
 import com.vistay.payment.application.BookingChargeService;
 import com.vistay.payment.domain.BookingChargeAdjustmentRepository;
 import com.vistay.payment.domain.BookingChargeAllocationRepository;
@@ -20,7 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
     classes = {
         BookingChargeService.class,
         BookingChargeController.class,
-        DefaultBookingBranchResolver.class
+        DefaultBookingBranchResolver.class,
+        BookingChargeAuthorizationService.class
     },
     properties = {
         "spring.main.banner-mode=off"
@@ -49,6 +51,9 @@ class PaymentContextStartupIntegrationTest {
     @Autowired
     private BookingBranchResolver bookingBranchResolver;
 
+    @Autowired
+    private BookingChargeAuthorizationService authorizationService;
+
     @Test
     @DisplayName("Context Startup: BookingChargeService and Controller beans initialize cleanly with unambiguous DI")
     void contextLoads_andBeansInjectedCleanly() {
@@ -56,6 +61,7 @@ class PaymentContextStartupIntegrationTest {
         assertThat(bookingChargeService).isNotNull();
         assertThat(bookingChargeController).isNotNull();
         assertThat(bookingBranchResolver).isNotNull();
+        assertThat(authorizationService).isNotNull();
     }
 }
 

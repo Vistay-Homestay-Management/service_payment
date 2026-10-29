@@ -42,7 +42,7 @@ class BookingChargeControllerTest {
     @Mock
     private BookingBranchResolver bookingBranchResolver;
 
-    @InjectMocks
+    private BookingChargeAuthorizationService authorizationService;
     private BookingChargeController controller;
 
     private final UUID chargeId = UUID.randomUUID();
@@ -56,6 +56,8 @@ class BookingChargeControllerTest {
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
+        authorizationService = new BookingChargeAuthorizationService(bookingBranchResolver);
+        controller = new BookingChargeController(bookingChargeService, bookingBranchResolver, authorizationService);
     }
 
     @AfterEach
@@ -317,7 +319,7 @@ class BookingChargeControllerTest {
     @Test
     @DisplayName("P0-03 Staff Global Override: ROLE_ADMIN có ALL scope xem được mọi cơ sở -> 200 OK")
     void getChargeById_AdminUser_Returns200() {
-        Jwt jwt = createJwt("ADMIN:" + UUID.randomUUID(), null);
+        Jwt jwt = createJwt("ADMIN:" + UUID.randomUUID(), Map.of("grants", List.of(Map.of("p", "payment:read", "s", "ALL"))));
         SecurityContext context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))));
         SecurityContextHolder.setContext(context);
@@ -328,6 +330,21 @@ class BookingChargeControllerTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("P0-02 Elimination of Admin Bypass: ROLE_ADMIN không có ALL grant -> 403 Forbidden")
+    void getChargeById_AdminUserWithoutScope_Throws403() {
+        Jwt jwt = createJwt("ADMIN:" + UUID.randomUUID(), null);
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(jwt, null, List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))));
+        SecurityContextHolder.setContext(context);
+
+        when(bookingChargeService.getChargeById(chargeId)).thenReturn(createSampleChargeResponse(customerId, branchB, staffUserId));
+
+        assertThatThrownBy(() -> controller.getChargeById(chargeId, jwt))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN));
     }
 
     @Test
@@ -582,6 +599,7 @@ class BookingChargeControllerTest {
 
         BookingChargeResponse charge1 = createSampleChargeResponse(customerId, branchA, staffUserId);
         BookingChargeResponse charge2 = createSampleChargeResponse(customerId, branchB, staffUserId);
+        when(bookingBranchResolver.resolveBranchId(bookingId)).thenReturn(Optional.of(branchA));
         when(bookingChargeService.getChargesByBooking(bookingId)).thenReturn(List.of(charge1, charge2));
 
         assertThatThrownBy(() -> controller.getChargesByBooking(bookingId, jwt))
