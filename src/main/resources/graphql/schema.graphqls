@@ -1,5 +1,45 @@
 type Query {
     serviceInfo: ServiceInfo!
+    paymentIntent(id: ID!): PaymentIntent!
+}
+
+type Mutation {
+    createVietQrPaymentIntent(input: CreateVietQrPaymentIntentInput!): PaymentIntent!
+    cancelPaymentIntent(input: CancelPaymentIntentInput!): PaymentIntent!
+}
+
+input CreateVietQrPaymentIntentInput {
+    financePaymentRequestId: ID!
+    idempotencyKey: String!
+}
+
+input CancelPaymentIntentInput {
+    paymentIntentId: ID!
+    expectedVersion: Int!
+    reason: String!
+}
+
+type PaymentIntent {
+    id: ID!
+    intentCode: String!
+    financePaymentRequestId: ID!
+    amount: String!
+    currency: String!
+    status: PaymentIntentStatus!
+    qrPayload: String
+    qrImageDataUri: String
+    expiresAt: String!
+    version: Int!
+}
+
+enum PaymentIntentStatus {
+    CREATED
+    QR_READY
+    PENDING
+    SUCCEEDED
+    FAILED
+    EXPIRED
+    CANCELLED
 }
 
 type ServiceInfo {

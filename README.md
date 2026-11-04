@@ -17,3 +17,6 @@ Creating a QR never marks a booking or receivable as paid.
 ```
 
 Runtime secrets and provider credentials must be injected outside Git.
+
+The Redis security-state boundary, activation checks and rollback procedure are
+versioned in [`docs/redis-security-runbook.md`](docs/redis-security-runbook.md).

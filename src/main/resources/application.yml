@@ -53,12 +53,36 @@ spring:
       ssl.truststore.password: ${KAFKA_TRUSTSTORE_PASSWORD:}
     producer:
       acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
       properties:
         enable.idempotence: true
     consumer:
       enable-auto-commit: false
       properties:
         isolation.level: read_committed
+  grpc:
+    client:
+      channel:
+        finance:
+          address: ${FINANCE_GRPC_ADDRESS:static://service-finance:9090}
+        user:
+          target: ${USER_GRPC_ADDRESS:static://localhost:9091}
+          ssl:
+            bundle: ${USER_GRPC_SSL_BUNDLE:grpc-user-client}
+        booking:
+          target: ${BOOKING_GRPC_ADDRESS:static://localhost:9092}
+          ssl:
+            bundle: ${BOOKING_GRPC_SSL_BUNDLE:grpc-user-client}
+  ssl:
+    bundle:
+      pem:
+        grpc-user-client:
+          keystore:
+            certificate: ${GRPC_CLIENT_CERT:file:/run/secrets/grpc/payment.crt}
+            private-key: ${GRPC_CLIENT_KEY:file:/run/secrets/grpc/payment.key}
+          truststore:
+            certificate: ${GRPC_SERVER_CA_CERT:file:/run/secrets/grpc/ca.crt}
 
 server:
   port: ${SERVER_PORT:8080}
@@ -80,6 +104,7 @@ vistay:
     audience: ${JWT_AUDIENCE:vistay-backoffice-api}
   payment:
     activation-mode: ${PAYMENT_ACTIVATION_MODE:DISABLED}
+    finance-deadline: ${FINANCE_GRPC_DEADLINE:PT2S}
     vietqr:
       base-url: ${VIETQR_BASE_URL:https://api.vietqr.io}
       client-id: ${VIETQR_CLIENT_ID:}
@@ -90,6 +115,13 @@ vistay:
       callback-client-id: ${VIETQR_CALLBACK_CLIENT_ID:}
       callback-client-secret: ${VIETQR_CALLBACK_CLIENT_SECRET:}
       callback-token-ttl: ${VIETQR_CALLBACK_TOKEN_TTL:PT5M}
+  topics:
+    authorization-changed: ${AUTHORIZATION_CHANGED_TOPIC:vistay.user.authorization-changed.v1}
+  authorization:
+    local-cache-ttl: ${AUTHORIZATION_LOCAL_CACHE_TTL:30s}
+    grpc-deadline: ${AUTHORIZATION_GRPC_DEADLINE:2s}
+  booking:
+    authorization-deadline: ${BOOKING_AUTHORIZATION_GRPC_DEADLINE:2s}
 
 logging:
   structured:
