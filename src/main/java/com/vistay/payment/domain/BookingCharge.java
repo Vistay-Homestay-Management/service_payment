@@ -4,6 +4,8 @@ import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "booking_charges", schema = "app")
@@ -46,7 +48,8 @@ public class BookingCharge {
     @Column(name = "outstanding_balance", nullable = false, precision = 19, scale = 4)
     private BigDecimal outstandingBalance;
 
-    @Column(name = "currency", nullable = false, length = 3)
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "currency", nullable = false, length = 3, columnDefinition = "char(3)")
     private String currency = "VND";
 
     @Column(name = "due_date", nullable = false)

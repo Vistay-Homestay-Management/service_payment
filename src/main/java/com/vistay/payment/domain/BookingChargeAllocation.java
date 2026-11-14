@@ -4,6 +4,8 @@ import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "booking_charge_allocations", schema = "app")
@@ -24,7 +26,8 @@ public class BookingChargeAllocation {
     @Column(name = "allocated_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal allocatedAmount;
 
-    @Column(name = "currency", nullable = false, length = 3)
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "currency", nullable = false, length = 3, columnDefinition = "char(3)")
     private String currency;
 
     @Column(name = "allocated_by_user_id")
