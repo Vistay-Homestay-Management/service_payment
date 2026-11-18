@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.grpc.client.GrpcChannelFactory;
 import org.springframework.stereotype.Component;
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Component;
 public class GrpcBookingProjectionClient implements BookingProjectionClient {
     private final Lookup lookup;
 
+    @Autowired
     public GrpcBookingProjectionClient(
         GrpcChannelFactory channels,
         @Value("${vistay.booking.authorization-deadline:2s}") Duration deadline
